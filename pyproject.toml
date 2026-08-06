@@ -1,0 +1,23 @@
+[project]
+name = "meeting-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn",
+  "pydantic>=2",
+  "pydantic-settings",
+  "sqlalchemy>=2",
+  "psycopg[binary]",
+  "redis",
+  "qdrant-client",
+  "minio",
+  "langgraph",
+  "langchain",
+  "python-multipart",
+  "pytest",
+  "httpx",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
