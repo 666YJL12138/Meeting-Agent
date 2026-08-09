@@ -1,74 +1,104 @@
 from langgraph.graph import StateGraph, START, END
+
 from .state import MeetingState
+from services.audio import normalize_audio_to_wav, inspect_wav, detect_voice_segments
+from services.asr import transcribe_audio
+
 
 def audio_quality_node(state: MeetingState) -> MeetingState:
-    return {**state, "progress": 20, "status": "audio_checked"}
+    normalized_path = normalize_audio_to_wav(
+        input_path=state["audio_uri"],
+        meeting_id=state["meeting_id"],
+    )
+
+    audio_info = inspect_wav(normalized_path)
+    voice_segments = detect_voice_segments(normalized_path)
+
+    return {
+        **state,
+        "normalized_audio_uri": normalized_path,
+        "audio_info": audio_info,
+        "voice_segments": voice_segments,
+        "progress": 35,
+        "status": "audio_checked",
+    }
+
 
 def asr_node(state: MeetingState) -> MeetingState:
-    fake_spans = [
-        {
-            "span_id": "span_001",
-            "speaker_id": "speaker_00",
-            "start_ms": 12000,
-            "end_ms": 18000,
-            "text": "我们需要在下周完成接口联调。",
-            "asr_confidence": 0.92,
-        }
-    ]
-    return {**state, "progress": 40, "status": "asr_done", "transcript_spans": fake_spans}
-
-def diarization_node(state: MeetingState) -> MeetingState:
-    speakers = [{"speaker_id": "speaker_00", "name": "待确认"}]
-    return {**state, "progress": 60, "status": "diarization_done", "speakers": speakers}
-
-def contribution_node(state: MeetingState) -> MeetingState:
-    claims = [
-        {
-            "claim_id": "claim_001",
-            "speaker_id": "speaker_00",
-            "claim_type": "commitment",
-            "statement": "下周完成接口联调",
-            "evidence_ids": ["span_001"],
-            "confidence": 0.88,
-            "review_status": "pending",
-        }
-    ]
-    return {**state, "progress": 80, "status": "summary_done", "claims": claims}
-
-def report_node(state: MeetingState) -> MeetingState:
-    return {**state, "progress": 100, "status": "completed"}
-
-def build_graph():
-    g = StateGraph(MeetingState)
-    g.add_node("audio_quality", audio_quality_node)
-    g.add_node("asr", asr_node)
-    g.add_node("diarization", diarization_node)
-    g.add_node("contribution", contribution_node)
-    g.add_node("report", report_node)
-
-    g.add_edge(START, "audio_quality")
-    g.add_edge("audio_quality", "asr")
-    g.add_edge("asr", "diarization")
-    g.add_edge("diarization", "contribution")
-    g.add_edge("contribution", "report")
-    g.add_edge("report", END)
-    return g.compile()
-
-GRAPH = build_graph()
-
-def run_demo_graph(meeting: dict) -> dict:
-    state = GRAPH.invoke(
-        {
-            "meeting_id": meeting["meeting_id"],
-            "title": meeting["title"],
-            "audio_uri": meeting.get("audio_uri", ""),
-            "status": "processing",
-            "progress": 10,
-            "errors": [],
-            "transcript_spans": [],
-            "speakers": [],
-            "claims": [],
-            "evidence_links": [],
-        }
+    spans = transcribe_audio(
+        wav_path=state["normalized_audio_uri"],
+        meeting_id=state["meeting_id"],
     )
-    return state
+
+    return {
+        **state,
+        "transcript_spans": spans,
+        "progress": 70,
+        "status": "asr_done",
+    }
+
+
+def evidence_stub_node(state: MeetingState) -> MeetingState:
+    evidence_links = []
+
+    for span in state.get("transcript_spans", []):
+        evidence_links.append({
+            "evidence_id": f"ev_{span['span_id']}",
+            "span_id": span["span_id"],
+            "quote": span["text"],
+            "start_ms": span["start_ms"],
+            "end_ms": span["end_ms"],
+        })
+
+    return {
+        **state,
+        "evidence_links": evidence_links,
+        "progress": 90,
+        "status": "evidence_stub_done",
+    }
+
+
+def finish_node(state: MeetingState) -> MeetingState:
+    return {
+        **state,
+        "progress": 100,
+        "status": "completed",
+    }
+
+
+def build_audio_asr_graph():
+    graph = StateGraph(MeetingState)
+
+    graph.add_node("audio_quality", audio_quality_node)
+    graph.add_node("asr", asr_node)
+    graph.add_node("evidence_stub", evidence_stub_node)
+    graph.add_node("finish", finish_node)
+
+    graph.add_edge(START, "audio_quality")
+    graph.add_edge("audio_quality", "asr")
+    graph.add_edge("asr", "evidence_stub")
+    graph.add_edge("evidence_stub", "finish")
+    graph.add_edge("finish", END)
+
+    return graph.compile()
+
+
+AUDIO_ASR_GRAPH = build_audio_asr_graph()
+
+
+def run_audio_asr_graph(meeting: dict) -> dict:
+    if not meeting.get("audio_uri"):
+        raise ValueError("audio_uri is required before running ASR graph")
+
+    return AUDIO_ASR_GRAPH.invoke({
+        "meeting_id": meeting["meeting_id"],
+        "title": meeting["title"],
+        "audio_uri": meeting["audio_uri"],
+        "status": "processing",
+        "progress": 10,
+        "errors": [],
+        "transcript_spans": [],
+        "speakers": [],
+        "claims": [],
+        "evidence_links": [],
+    })
