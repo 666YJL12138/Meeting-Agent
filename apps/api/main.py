@@ -4,7 +4,7 @@ from pathlib import Path
 import json
 import shutil
 
-from .schemas import MeetingCreate, MeetingOut, MeetingStatusOut
+from .schemas import MeetingCreate, MeetingOut, MeetingStatusOut, SpeakerMappingIn
 from .db import Base, engine
 from .models import Meeting
 from agents.graph import run_audio_asr_graph
@@ -27,6 +27,9 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
         "status": state.get("status"),
         "audio_info": state.get("audio_info", {}),
         "voice_segments": state.get("voice_segments", []),
+        "speakers": state.get("speakers", []),
+        "speaker_segments": state.get("speaker_segments", []),
+        "speaker_mapping": state.get("speaker_mapping", {}),
         "transcript_spans": state.get("transcript_spans", []),
         "evidence_links": state.get("evidence_links", []),
         "normalized_audio_uri": state.get("normalized_audio_uri"),
@@ -134,5 +137,23 @@ def run_asr(meeting_id: str):
         STORE[meeting_id]["progress"] = 0
         STORE[meeting_id]["error"] = str(exc)
         raise HTTPException(500, str(exc))
+
+
+@app.post("/meetings/{meeting_id}/speaker-mapping", response_model=MeetingOut)
+def update_speaker_mapping(meeting_id: str, payload: SpeakerMappingIn):
+    if meeting_id not in STORE:
+        raise HTTPException(404, "meeting not found")
+
+    mapping = payload.mapping
+    STORE[meeting_id]["speaker_mapping"] = mapping
+
+    for speaker in STORE[meeting_id].get("speakers", []):
+        speaker_id = speaker["speaker_id"]
+        if speaker_id in mapping:
+            speaker["real_name"] = mapping[speaker_id]
+            speaker["display_name"] = mapping[speaker_id]
+            speaker["review_status"] = "confirmed"
+
+    return STORE[meeting_id]
 
 

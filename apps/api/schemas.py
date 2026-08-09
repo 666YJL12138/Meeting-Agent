@@ -19,6 +19,9 @@ class MeetingOut(BaseModel):
     normalized_audio_uri: Optional[str] = None
     audio_info: Optional[dict[str, Any]] = None
     voice_segments: list[dict[str, Any]] = []
+    speakers: list[dict[str, Any]] = []
+    speaker_segments: list[dict[str, Any]] = []
+    speaker_mapping: dict[str, str] = {}
     transcript_spans: list[dict[str, Any]] = []
     evidence_links: list[dict[str, Any]] = []
 
@@ -27,3 +30,8 @@ class MeetingStatusOut(BaseModel):
     status: str
     progress: int = 0
     error: Optional[str] = None
+
+
+class SpeakerMappingIn(BaseModel):
+    mapping: dict[str, str]
+

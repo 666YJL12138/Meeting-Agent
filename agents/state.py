@@ -12,6 +12,9 @@ class MeetingState(TypedDict, total=False):
     transcript_spans: List[Dict[str, Any]]
 
     speakers: List[Dict[str, Any]]
+    speaker_segments: List[Dict[str, Any]]
+    speaker_mapping: Dict[str, str]
+
     claims: List[Dict[str, Any]]
     evidence_links: List[Dict[str, Any]]
 

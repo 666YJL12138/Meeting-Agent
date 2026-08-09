@@ -1,9 +1,8 @@
-﻿from langgraph.graph import StateGraph, START, END
-
+from langgraph.graph import StateGraph, START, END
+from services.diarization import diarize_audio, assign_speakers_to_spans, build_speakers
 from .state import MeetingState
 from services.audio import normalize_audio_to_wav, inspect_wav, detect_voice_segments
 from services.asr import transcribe_audio
-from services.diarization import diarize_audio, assign_speakers_to_spans, build_speakers
 
 
 def audio_quality_node(state: MeetingState) -> MeetingState:
@@ -16,6 +15,7 @@ def audio_quality_node(state: MeetingState) -> MeetingState:
     voice_segments = detect_voice_segments(normalized_path)
 
     return {
+        **state,
         "normalized_audio_uri": normalized_path,
         "audio_info": audio_info,
         "voice_segments": voice_segments,
@@ -31,9 +31,38 @@ def asr_node(state: MeetingState) -> MeetingState:
     )
 
     return {
+        **state,
         "transcript_spans": spans,
         "progress": 70,
         "status": "asr_done",
+    }
+
+
+def evidence_stub_node(state: MeetingState) -> MeetingState:
+    evidence_links = []
+
+    for span in state.get("transcript_spans", []):
+        evidence_links.append({
+            "evidence_id": f"ev_{span['span_id']}",
+            "span_id": span["span_id"],
+            "quote": span["text"],
+            "start_ms": span["start_ms"],
+            "end_ms": span["end_ms"],
+        })
+
+    return {
+        **state,
+        "evidence_links": evidence_links,
+        "progress": 90,
+        "status": "evidence_stub_done",
+    }
+
+
+def finish_node(state: MeetingState) -> MeetingState:
+    return {
+        **state,
+        "progress": 100,
+        "status": "completed",
     }
 
 
@@ -51,38 +80,12 @@ def diarization_node(state: MeetingState) -> MeetingState:
     speakers = build_speakers(speaker_segments)
 
     return {
+        **state,
         "speaker_segments": speaker_segments,
         "transcript_spans": assigned_spans,
         "speakers": speakers,
         "progress": 82,
         "status": "diarization_done",
-    }
-
-
-def evidence_stub_node(state: MeetingState) -> MeetingState:
-    evidence_links = []
-
-    for span in state.get("transcript_spans", []):
-        evidence_links.append({
-            "evidence_id": f"ev_{span['span_id']}",
-            "span_id": span["span_id"],
-            "quote": span["text"],
-            "start_ms": span["start_ms"],
-            "end_ms": span["end_ms"],
-            "speaker_id": span.get("speaker_id"),
-        })
-
-    return {
-        "evidence_links": evidence_links,
-        "progress": 92,
-        "status": "evidence_done",
-    }
-
-
-def finish_node(state: MeetingState) -> MeetingState:
-    return {
-        "progress": 100,
-        "status": "completed",
     }
 
 
@@ -97,8 +100,8 @@ def build_audio_asr_graph():
 
     graph.add_edge(START, "audio_quality")
     graph.add_edge("audio_quality", "asr")
+    graph.add_edge("asr", "evidence_stub")
     graph.add_edge("asr", "diarization")
-    graph.add_edge("diarization", "evidence_stub")
     graph.add_edge("evidence_stub", "finish")
     graph.add_edge("finish", END)
 
