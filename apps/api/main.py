@@ -4,7 +4,7 @@ from pathlib import Path
 import json
 import shutil
 
-from .schemas import MeetingCreate, MeetingOut, MeetingStatusOut, SpeakerMappingIn
+from .schemas import MeetingCreate, MeetingOut, MeetingStatusOut, SpeakerMappingIn, DiarizationDebugOut
 from .db import Base, engine
 from .models import Meeting
 from agents.graph import run_audio_asr_graph
@@ -156,4 +156,23 @@ def update_speaker_mapping(meeting_id: str, payload: SpeakerMappingIn):
 
     return STORE[meeting_id]
 
+
+@app.get("/meetings/{meeting_id}/diarization", response_model=DiarizationDebugOut)
+def get_diarization_result(meeting_id: str):
+    if meeting_id not in STORE:
+        raise HTTPException(404, "meeting not found")
+
+    item = STORE[meeting_id]
+    speaker_segments = item.get("speaker_segments", [])
+
+    source = "unknown"
+    if speaker_segments:
+        source = speaker_segments[0].get("source", "unknown")
+
+    return {
+        "meeting_id": meeting_id,
+        "speaker_source": source,
+        "speakers": item.get("speakers", []),
+        "speaker_segments": speaker_segments,
+    }
 

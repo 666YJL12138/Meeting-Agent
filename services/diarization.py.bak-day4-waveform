@@ -1,10 +1,6 @@
-﻿from functools import lru_cache
+from functools import lru_cache
 from pathlib import Path
 import os
-import wave
-
-import numpy as np
-import torch
 
 
 PYANNOTE_MODEL = os.getenv(
@@ -61,8 +57,7 @@ def diarize_audio(
     if max_speakers is not None:
         kwargs["max_speakers"] = max_speakers
 
-    audio = load_waveform_for_pyannote(wav_path)
-    output = pipeline(audio, **kwargs)
+    output = pipeline(wav_path, **kwargs)
 
     annotation = getattr(output, "exclusive_speaker_diarization", None)
     if annotation is None:
@@ -75,31 +70,6 @@ def diarize_audio(
 
     return merge_close_segments(speaker_segments)
 
-
-def load_waveform_for_pyannote(wav_path: str) -> dict:
-    with wave.open(wav_path, "rb") as wav:
-        channels = wav.getnchannels()
-        sample_rate = wav.getframerate()
-        sample_width = wav.getsampwidth()
-        frame_count = wav.getnframes()
-        raw = wav.readframes(frame_count)
-
-    if sample_width != 2:
-        raise ValueError(f"Only 16-bit PCM wav is supported, got sample_width={sample_width}")
-
-    audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-
-    if channels > 1:
-        audio = audio.reshape(-1, channels).T
-    else:
-        audio = audio.reshape(1, -1)
-
-    waveform = torch.from_numpy(audio)
-
-    return {
-        "waveform": waveform,
-        "sample_rate": sample_rate,
-    }
 
 def parse_pyannote_output(annotation) -> list[dict]:
     speaker_segments = []
@@ -239,4 +209,3 @@ def detect_source(speaker_id: str, speaker_segments: list[dict]) -> str:
         if seg["speaker_id"] == speaker_id:
             return seg.get("source", "unknown")
     return "unknown"
-

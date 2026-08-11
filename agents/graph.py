@@ -41,11 +41,14 @@ def diarization_node(state: MeetingState) -> MeetingState:
     speaker_segments = diarize_audio(
         wav_path=state["normalized_audio_uri"],
         voice_segments=state.get("voice_segments", []),
+        min_speakers=None,
+        max_speakers=None,
     )
 
     assigned_spans = assign_speakers_to_spans(
         transcript_spans=state.get("transcript_spans", []),
         speaker_segments=speaker_segments,
+        min_confidence=0.2,
     )
 
     speakers = build_speakers(speaker_segments)

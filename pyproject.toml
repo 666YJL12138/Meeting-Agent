@@ -16,7 +16,11 @@ dependencies = [
   "langchain",
   "python-multipart",
   "pytest",
-  "httpx",
+  "httpx", 
+  "pyannote.audio",
+  "torch",
+  "torchaudio",
+  "opencc-python-reimplemented",
 ]
 
 [tool.pytest.ini_options]

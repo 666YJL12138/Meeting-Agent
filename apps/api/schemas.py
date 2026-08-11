@@ -35,3 +35,10 @@ class MeetingStatusOut(BaseModel):
 class SpeakerMappingIn(BaseModel):
     mapping: dict[str, str]
 
+
+class DiarizationDebugOut(BaseModel):
+    meeting_id: str
+    speaker_source: str
+    speakers: list[dict[str, Any]]
+    speaker_segments: list[dict[str, Any]]
+    
