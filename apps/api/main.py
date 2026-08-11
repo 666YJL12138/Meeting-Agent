@@ -32,6 +32,8 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
         "speaker_mapping": state.get("speaker_mapping", {}),
         "transcript_spans": state.get("transcript_spans", []),
         "evidence_links": state.get("evidence_links", []),
+        "claims": state.get("claims", []),
+        "speaker_summaries": state.get("speaker_summaries", []),
         "normalized_audio_uri": state.get("normalized_audio_uri"),
     }
 
@@ -175,4 +177,27 @@ def get_diarization_result(meeting_id: str):
         "speakers": item.get("speakers", []),
         "speaker_segments": speaker_segments,
     }
+
+
+@app.get("/meetings/{meeting_id}/claims")
+def get_claims(meeting_id: str):
+    if meeting_id not in STORE:
+        raise HTTPException(404, "meeting not found")
+
+    return {
+        "meeting_id": meeting_id,
+        "claims": STORE[meeting_id].get("claims", []),
+    }
+
+
+@app.get("/meetings/{meeting_id}/speaker-summaries")
+def get_speaker_summaries(meeting_id: str):
+    if meeting_id not in STORE:
+        raise HTTPException(404, "meeting not found")
+
+    return {
+        "meeting_id": meeting_id,
+        "speaker_summaries": STORE[meeting_id].get("speaker_summaries", []),
+    }
+
 

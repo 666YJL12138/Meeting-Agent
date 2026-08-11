@@ -12,3 +12,4 @@ outputs/
 *.m4a
 
 .DS_Store
+*.bak_day5_claims_*

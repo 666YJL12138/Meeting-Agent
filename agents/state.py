@@ -16,6 +16,7 @@ class MeetingState(TypedDict, total=False):
     speaker_mapping: Dict[str, str]
 
     claims: List[Dict[str, Any]]
+    speaker_summaries: List[Dict[str, Any]]
     evidence_links: List[Dict[str, Any]]
 
     status: str

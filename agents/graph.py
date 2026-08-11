@@ -4,6 +4,7 @@ from .state import MeetingState
 from services.audio import normalize_audio_to_wav, inspect_wav, detect_voice_segments
 from services.asr import transcribe_audio
 from services.diarization import diarize_audio, assign_speakers_to_spans, build_speakers
+from services.contribution import extract_contributions, build_speaker_summaries
 
 
 def audio_quality_node(state: MeetingState) -> MeetingState:
@@ -82,6 +83,26 @@ def evidence_stub_node(state: MeetingState) -> MeetingState:
     }
 
 
+def contribution_node(state: MeetingState) -> MeetingState:
+    claims = extract_contributions(
+        meeting_id=state["meeting_id"],
+        transcript_spans=state.get("transcript_spans", []),
+        evidence_links=state.get("evidence_links", []),
+    )
+
+    speaker_summaries = build_speaker_summaries(
+        claims=claims,
+        speakers=state.get("speakers", []),
+    )
+
+    return {
+        "claims": claims,
+        "speaker_summaries": speaker_summaries,
+        "progress": 96,
+        "status": "contribution_done",
+    }
+
+
 def finish_node(state: MeetingState) -> MeetingState:
     return {
         "progress": 100,
@@ -96,13 +117,15 @@ def build_audio_asr_graph():
     graph.add_node("asr", asr_node)
     graph.add_node("diarization", diarization_node)
     graph.add_node("evidence_stub", evidence_stub_node)
+    graph.add_node("contribution", contribution_node)
     graph.add_node("finish", finish_node)
 
     graph.add_edge(START, "audio_quality")
     graph.add_edge("audio_quality", "asr")
     graph.add_edge("asr", "diarization")
     graph.add_edge("diarization", "evidence_stub")
-    graph.add_edge("evidence_stub", "finish")
+    graph.add_edge("evidence_stub", "contribution")
+    graph.add_edge("contribution", "finish")
     graph.add_edge("finish", END)
 
     return graph.compile()
@@ -126,6 +149,7 @@ def run_audio_asr_graph(meeting: dict) -> dict:
         "speakers": [],
         "speaker_segments": [],
         "speaker_mapping": {},
-        "claims": [],
+        "claims": [], 
+        "speaker_summaries": [],
         "evidence_links": [],
     })

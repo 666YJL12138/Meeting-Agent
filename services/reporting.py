@@ -18,6 +18,8 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
         "speaker_mapping": state.get("speaker_mapping", {}),
         "transcript_spans": state.get("transcript_spans", []),
         "evidence_links": state.get("evidence_links", []),
+        "claims": state.get("claims", []),
+        "speaker_summaries": state.get("speaker_summaries", []),
         "normalized_audio_uri": state.get("normalized_audio_uri"),
     }
 

@@ -23,7 +23,9 @@ class MeetingOut(BaseModel):
     speaker_segments: list[dict[str, Any]] = []
     speaker_mapping: dict[str, str] = {}
     transcript_spans: list[dict[str, Any]] = []
-    evidence_links: list[dict[str, Any]] = []
+    evidence_links: list[dict[str, Any]] = []  
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    speaker_summaries: list[dict[str, Any]] = Field(default_factory=list)
 
 class MeetingStatusOut(BaseModel):
     meeting_id: str
