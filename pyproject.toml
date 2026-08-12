@@ -23,6 +23,8 @@ dependencies = [
   "reportlab",
   "streamlit",
   "requests",
+  "flet",
+  "requests",
   "opencc-python-reimplemented",
 ]
 
