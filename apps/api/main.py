@@ -3,7 +3,8 @@ from uuid import uuid4
 from pathlib import Path
 import json
 import shutil
-
+from fastapi.responses import FileResponse
+from services.pdf_report import generate_meeting_pdf
 from .schemas import MeetingCreate, MeetingOut, MeetingStatusOut, SpeakerMappingIn, DiarizationDebugOut
 from .db import Base, engine
 from .models import Meeting
@@ -199,5 +200,37 @@ def get_speaker_summaries(meeting_id: str):
         "meeting_id": meeting_id,
         "speaker_summaries": STORE[meeting_id].get("speaker_summaries", []),
     }
+
+
+def load_meeting_state_for_report(meeting_id: str) -> dict:
+    if meeting_id in STORE:
+        return STORE[meeting_id]
+
+    json_path = RESULT_DIR / f"{meeting_id}.json"
+    if not json_path.exists():
+        raise HTTPException(404, "meeting not found")
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    data.setdefault("title", "离线会议")
+    data.setdefault("host", "-")
+    data.setdefault("language", "zh-CN")
+
+    return data
+
+
+@app.get("/meetings/{meeting_id}/report/pdf")
+def download_pdf_report(meeting_id: str):
+    meeting = load_meeting_state_for_report(meeting_id)
+
+    if not meeting.get("claims"):
+        raise HTTPException(400, "claims not found, please run /run-asr first")
+
+    pdf_path = generate_meeting_pdf(meeting)
+
+    return FileResponse(
+        path=pdf_path,
+        media_type="application/pdf",
+        filename=f"{meeting_id}_trusted_minutes.pdf",
+    )
 
 

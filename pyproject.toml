@@ -20,6 +20,7 @@ dependencies = [
   "pyannote.audio",
   "torch",
   "torchaudio",
+  "reportlab",
   "opencc-python-reimplemented",
 ]
 
