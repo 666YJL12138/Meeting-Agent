@@ -21,6 +21,8 @@ dependencies = [
   "torch",
   "torchaudio",
   "reportlab",
+  "streamlit",
+  "requests",
   "opencc-python-reimplemented",
 ]
 
