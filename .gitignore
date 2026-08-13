@@ -13,3 +13,9 @@ outputs/
 
 .DS_Store
 *.bak_day5_claims_*
+apps/mobile/build/
+**/*.apk
+**/*.aab
+*.bak*
+gradle_build.log
+mobile_build_latest.log

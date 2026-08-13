@@ -1,5 +1,4 @@
 from pathlib import Path
-import io
 
 import flet as ft
 import requests
@@ -7,7 +6,6 @@ import requests
 
 DEFAULT_API_BASE = "http://127.0.0.1:8000"
 DEFAULT_AUDIO_PATH = r"D:\futurework\Meeting-Agent\Meeting-Agent\day2_chinese_meeting_sample.wav"
-DEFAULT_AUDIO_LABEL = "尚未选择音频文件"
 
 CLAIM_TYPE_LABELS = {
     "viewpoint": "观点",
@@ -56,13 +54,6 @@ def post_file(api_base: str, path: str, file_path: str):
     return response.json()
 
 
-def post_file_bytes(api_base: str, path: str, file_name: str, file_bytes: bytes):
-    files = {"file": (file_name, io.BytesIO(file_bytes), "application/octet-stream")}
-    response = requests.post(f"{api_base}{path}", files=files, timeout=300)
-    response.raise_for_status()
-    return response.json()
-
-
 def get_bytes(api_base: str, path: str) -> bytes:
     response = requests.get(f"{api_base}{path}", timeout=120)
     response.raise_for_status()
@@ -79,8 +70,6 @@ def main(page: ft.Page):
     state = {
         "meeting_id": "",
         "audio_path": "",
-        "audio_name": "",
-        "audio_bytes": None,
         "result": None,
     }
 
@@ -94,7 +83,8 @@ def main(page: ft.Page):
         min_lines=2,
         max_lines=4,
     )
-    audio_path_input = ft.TextField(label="音频文件", value=DEFAULT_AUDIO_LABEL, read_only=True)
+    audio_path_input = ft.TextField(label="音频文件路径", value=DEFAULT_AUDIO_PATH)
+
     meeting_id_text = ft.Text("未创建", size=12, color="#344054")
     status_text = ft.Text("等待创建会议", size=14, weight=ft.FontWeight.BOLD, color="#175CD3")
     audio_text = ft.Text("请填写本地音频路径", size=12, color="#667085")
@@ -104,8 +94,7 @@ def main(page: ft.Page):
     summary_list = ft.Column(spacing=10)
     claims_list = ft.Column(spacing=10)
     transcript_list = ft.Column(spacing=6)
-    file_picker = ft.FilePicker()
-    page.services.append(file_picker)
+
     def card(content, bgcolor="#FFFFFF", padding=14):
         return ft.Container(
             content=content,
@@ -131,37 +120,8 @@ def main(page: ft.Page):
     def refresh_status(meeting: dict):
         state["meeting_id"] = meeting.get("meeting_id", state["meeting_id"])
         meeting_id_text.value = state["meeting_id"] or "未创建"
-        status_text.value = label_status(meeting.get("status"))
-        if meeting.get("audio_uri"):
-            audio_text.value = f"音频已上传：{state['audio_name'] or Path(meeting.get('audio_uri')).name}"
-        else:
-            audio_text.value = DEFAULT_AUDIO_LABEL
-
-    async def choose_audio_async():
-        try:
-            files = await file_picker.pick_files(
-                dialog_title="请选择会议音频",
-                file_type=ft.FilePickerFileType.AUDIO,
-                allow_multiple=False,
-                with_data=True,
-            )
-            if not files:
-                show_message("已取消选择音频")
-                return
-
-            picked = files[0]
-            state["audio_name"] = picked.name or "meeting_audio.wav"
-            state["audio_path"] = picked.path or ""
-            state["audio_bytes"] = picked.bytes
-            audio_path_input.value = f"已选择：{state['audio_name']}"
-            audio_text.value = f"已选择音频：{state['audio_name']}"
-            show_message(f"已选择音频：{state['audio_name']}")
-            page.update()
-        except Exception as exc:
-            show_message(f"选择音频失败：{exc}")
-
-    def choose_audio(_):
-        page.run_task(choose_audio_async)
+        status_text.value = label_status(meeting.get("status")) 
+        audio_text.value = "音频已上传" if meeting.get("audio_uri") else "请填写本地音频路径"
 
     def render_empty_results():
         summary_list.controls.clear()
@@ -286,25 +246,21 @@ def main(page: ft.Page):
         if not state["meeting_id"]:
             show_message("请先创建会议")
             return
-        if not state["audio_bytes"] and not state["audio_path"]:
-            show_message("请先选择音频文件")
+        state["audio_path"] = audio_path_input.value.strip()
+        if not state["audio_path"]:
+            show_message("请先填写音频文件路径")
+            return
+        if not Path(state["audio_path"]).exists():
+            show_message(f"音频文件不存在：{state['audio_path']}")
             return
 
         try:
             set_busy(True, "正在上传音频")
-            if state["audio_bytes"]:
-                meeting = post_file_bytes(
-                    api_base.value.strip(),
-                    f"/meetings/{state['meeting_id']}/audio",
-                    state["audio_name"] or "meeting_audio.wav",
-                    state["audio_bytes"],
-                )
-            else:
-                meeting = post_file(
-                    api_base.value.strip(),
-                    f"/meetings/{state['meeting_id']}/audio",
-                    state["audio_path"],
-                )
+            meeting = post_file(
+                api_base.value.strip(),
+                f"/meetings/{state['meeting_id']}/audio",
+                state["audio_path"],
+            )
             refresh_status(meeting)
             show_message("音频上传成功")
         except Exception as exc:
@@ -411,13 +367,7 @@ def main(page: ft.Page):
             [
                 section_title("2. 音频上传"),
                 audio_path_input,
-                ft.Row(
-                    [
-                        ft.ElevatedButton("选择音频文件", on_click=choose_audio, expand=True),
-                        ft.ElevatedButton("上传已选音频", on_click=upload_audio, expand=True),
-                    ],
-                    spacing=10,
-                ),
+                ft.ElevatedButton("上传音频", on_click=upload_audio, width=360),
             ],
             spacing=10,
         )
