@@ -19,6 +19,7 @@ from agents.graph import run_audio_asr_graph
 from services.cache import cache_meeting_state, load_cached_meeting_state
 from services.vector_store import search_meeting
 from services.quality_gate import build_quality_report
+from orchestration.graph import build_meeting_graph
 
 
 app = FastAPI(title="Meeting Agent API")
@@ -68,6 +69,21 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
         "result_json_path": str(json_path),
         "result_txt_path": str(txt_path),
     }
+
+
+def load_asr_result_for_agent(meeting_id: str) -> dict:
+    path = Path("outputs/asr") / f"{meeting_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"ASR result not found: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_agent_result(meeting_id: str, result: dict) -> str:
+    output_dir = Path("outputs/agent")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{meeting_id}.json"
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
 
 
 def restore_meeting_from_cache(meeting_id: str) -> dict | None:
@@ -340,5 +356,45 @@ def health_check():
             "local_bge": True,
         },
     }
+
+
+@app.post("/meetings/{meeting_id}/run-agent")
+def run_agent(meeting_id: str):
+    asr_result = load_asr_result_for_agent(meeting_id)
+
+    spans = asr_result.get("transcript_spans", [])
+    evidence = []
+
+    for index, span in enumerate(spans):
+        text = span.get("text", "").strip()
+        if not text:
+            continue
+
+        evidence.append({
+            "evidence_id": f"seg_{index:04d}",
+            "meeting_id": meeting_id,
+            "speaker_id": span.get("speaker_id", "UNKNOWN"),
+            "text": text,
+            "start_ms": int(span.get("start_ms", 0)),
+            "end_ms": int(span.get("end_ms", 0)),
+        })
+
+    state = {
+        "meeting_id": meeting_id,
+        "title": asr_result.get("title", "会议纪要"),
+        "evidence": evidence,
+        "speaker_ids": sorted({item["speaker_id"] for item in evidence}),
+        "contributions": [],
+        "action_items": [],
+        "risks": [],
+        "errors": [],
+    }
+
+    graph = build_meeting_graph()
+    result = graph.invoke(state)
+    output_path = save_agent_result(meeting_id, result)
+    result["agent_result_path"] = output_path
+    return result
+
 
 
