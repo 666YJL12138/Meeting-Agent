@@ -20,6 +20,9 @@ from services.cache import cache_meeting_state, load_cached_meeting_state
 from services.vector_store import search_meeting
 from services.quality_gate import build_quality_report
 from orchestration.graph import build_meeting_graph
+from pydantic import BaseModel, EmailStr
+from tools.email_tools import send_report_email_tool
+from services.email_sender import EmailSendError
 
 
 app = FastAPI(title="Meeting Agent API")
@@ -29,6 +32,24 @@ AUDIO_DIR = Path("data/audio")
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR = Path("outputs/asr")
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class SendReportEmailRequest(BaseModel):
+    to_email: EmailStr
+    subject: str | None = None
+    body: str | None = None
+
+
+def get_latest_report_pdf_path(meeting_id: str) -> str:
+    report_dir = Path("outputs/reports")
+    candidates = sorted(
+        report_dir.glob(f"{meeting_id}*.pdf"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise HTTPException(status_code=404, detail="PDF report not found")
+    return str(candidates[0])
 
 
 def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
@@ -394,6 +415,24 @@ def run_agent(meeting_id: str):
     result = graph.invoke(state)
     output_path = save_agent_result(meeting_id, result)
     result["agent_result_path"] = output_path
+    return result
+
+
+@app.post("/meetings/{meeting_id}/report/email")
+def send_report_email_api(meeting_id: str, request: SendReportEmailRequest):
+    pdf_path = get_latest_report_pdf_path(meeting_id)
+
+    try:
+        result = send_report_email_tool(
+            meeting_id=meeting_id,
+            pdf_path=pdf_path,
+            to_email=request.to_email,
+            subject=request.subject,
+            body=request.body,
+        )
+    except EmailSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     return result
 
 

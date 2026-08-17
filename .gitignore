@@ -6,6 +6,7 @@ __pycache__/
 data/audio/
 outputs/
 .env
+.example
 
 *.wav
 *.mp3
