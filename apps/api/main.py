@@ -5,10 +5,19 @@ import json
 import shutil
 from fastapi.responses import FileResponse
 from services.pdf_report import generate_meeting_pdf
-from .schemas import MeetingCreate, MeetingOut, MeetingStatusOut, SpeakerMappingIn, DiarizationDebugOut
+from .schemas import (
+    ClaimReviewIn,
+    DiarizationDebugOut,
+    MeetingCreate,
+    MeetingOut,
+    MeetingStatusOut,
+    SpeakerMappingIn,
+)
 from .db import Base, engine
 from .models import Meeting
 from agents.graph import run_audio_asr_graph
+from services.cache import cache_meeting_state, load_cached_meeting_state
+from services.vector_store import search_meeting
 
 app = FastAPI(title="Meeting Agent API")
 
@@ -36,6 +45,8 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
         "claims": state.get("claims", []),
         "speaker_summaries": state.get("speaker_summaries", []),
         "normalized_audio_uri": state.get("normalized_audio_uri"),
+        "index_status": state.get("index_status", []),
+        "errors": state.get("errors", []),
     }
 
     json_path.write_text(
@@ -55,6 +66,18 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
         "result_json_path": str(json_path),
         "result_txt_path": str(txt_path),
     }
+
+
+def restore_meeting_from_cache(meeting_id: str) -> dict | None:
+    if meeting_id in STORE:
+        return STORE[meeting_id]
+
+    cached = load_cached_meeting_state(meeting_id)
+    if cached:
+        STORE[meeting_id] = cached
+        return cached
+
+    return None
 
 @app.on_event("startup")
 def startup():
@@ -105,13 +128,13 @@ def run_demo(meeting_id: str):
 
 @app.get("/meetings/{meeting_id}", response_model=MeetingOut)
 def get_meeting(meeting_id: str):
-    if meeting_id not in STORE:
+    if not restore_meeting_from_cache(meeting_id):
         raise HTTPException(404, "meeting not found")
     return STORE[meeting_id]
 
 @app.get("/meetings/{meeting_id}/status", response_model=MeetingStatusOut)
 def get_status(meeting_id: str):
-    if meeting_id not in STORE:
+    if not restore_meeting_from_cache(meeting_id):
         raise HTTPException(404, "meeting not found")
     item = STORE[meeting_id]
     return {
@@ -157,6 +180,7 @@ def update_speaker_mapping(meeting_id: str, payload: SpeakerMappingIn):
             speaker["display_name"] = mapping[speaker_id]
             speaker["review_status"] = "confirmed"
 
+    cache_meeting_state(meeting_id, STORE[meeting_id])
     return STORE[meeting_id]
 
 
@@ -200,6 +224,64 @@ def get_speaker_summaries(meeting_id: str):
         "meeting_id": meeting_id,
         "speaker_summaries": STORE[meeting_id].get("speaker_summaries", []),
     }
+
+
+@app.get("/meetings/{meeting_id}/search")
+def search_meeting_evidence(
+    meeting_id: str,
+    q: str,
+    limit: int = 5,
+):
+    if not restore_meeting_from_cache(meeting_id):
+        raise HTTPException(404, "meeting not found")
+
+    query = q.strip()
+    if not query:
+        raise HTTPException(400, "query cannot be empty")
+
+    safe_limit = max(1, min(limit, 20))
+
+    try:
+        hits = search_meeting(
+            meeting_id=meeting_id,
+            query=query,
+            limit=safe_limit,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            f"evidence search unavailable: {exc}",
+        ) from exc
+
+    return {
+        "meeting_id": meeting_id,
+        "query": query,
+        "hits": hits,
+    }
+
+
+@app.post(
+    "/meetings/{meeting_id}/claims/{claim_id}/review",
+)
+def review_claim(
+    meeting_id: str,
+    claim_id: str,
+    payload: ClaimReviewIn,
+):
+    if not restore_meeting_from_cache(meeting_id):
+        raise HTTPException(404, "meeting not found")
+
+    for claim in STORE[meeting_id].get("claims", []):
+        if claim.get("claim_id") != claim_id:
+            continue
+
+        claim["review_status"] = payload.review_status
+        claim["review_note"] = payload.review_note
+        claim["reviewer"] = payload.reviewer
+        cache_meeting_state(meeting_id, STORE[meeting_id])
+        return claim
+
+    raise HTTPException(404, "claim not found")
 
 
 def load_meeting_state_for_report(meeting_id: str) -> dict:

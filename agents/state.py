@@ -21,4 +21,5 @@ class MeetingState(TypedDict, total=False):
 
     status: str
     progress: int
+    index_status: List[str]
     errors: List[str]

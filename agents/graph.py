@@ -5,6 +5,8 @@ from services.audio import normalize_audio_to_wav, inspect_wav, detect_voice_seg
 from services.asr import transcribe_audio
 from services.diarization import diarize_audio, assign_speakers_to_spans, build_speakers
 from services.contribution import extract_contributions, build_speaker_summaries
+from services.cache import cache_meeting_state
+from services.vector_store import index_meeting
 
 
 def audio_quality_node(state: MeetingState) -> MeetingState:
@@ -103,6 +105,39 @@ def contribution_node(state: MeetingState) -> MeetingState:
     }
 
 
+def index_node(state: MeetingState) -> MeetingState:
+    errors = list(state.get("errors", []))
+    index_status = []
+
+    try:
+        count = index_meeting(
+            meeting_id=state["meeting_id"],
+            transcript_spans=state.get("transcript_spans", []),
+            claims=state.get("claims", []),
+        )
+        index_status.append(f"qdrant:indexed:{count}")
+    except Exception as exc:
+        errors.append(f"qdrant indexing failed: {exc}")
+        index_status.append("qdrant:failed")
+
+    try:
+        cache_meeting_state(
+            meeting_id=state["meeting_id"],
+            state=dict(state),
+        )
+        index_status.append("redis:cached")
+    except Exception as exc:
+        errors.append(f"redis caching failed: {exc}")
+        index_status.append("redis:failed")
+
+    return {
+        "progress": 98,
+        "status": "indexed",
+        "index_status": index_status,
+        "errors": errors,
+    }
+
+
 def finish_node(state: MeetingState) -> MeetingState:
     return {
         "progress": 100,
@@ -118,6 +153,7 @@ def build_audio_asr_graph():
     graph.add_node("diarization", diarization_node)
     graph.add_node("evidence_stub", evidence_stub_node)
     graph.add_node("contribution", contribution_node)
+    graph.add_node("index", index_node)
     graph.add_node("finish", finish_node)
 
     graph.add_edge(START, "audio_quality")
@@ -125,7 +161,8 @@ def build_audio_asr_graph():
     graph.add_edge("asr", "diarization")
     graph.add_edge("diarization", "evidence_stub")
     graph.add_edge("evidence_stub", "contribution")
-    graph.add_edge("contribution", "finish")
+    graph.add_edge("contribution", "index")
+    graph.add_edge("index", "finish")
     graph.add_edge("finish", END)
 
     return graph.compile()
@@ -152,4 +189,5 @@ def run_audio_asr_graph(meeting: dict) -> dict:
         "claims": [], 
         "speaker_summaries": [],
         "evidence_links": [],
+        "index_status": [],
     })

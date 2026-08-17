@@ -1,5 +1,6 @@
 from pathlib import Path
 import io
+from urllib.parse import quote
 
 import flet as ft
 import requests
@@ -69,6 +70,12 @@ def get_bytes(api_base: str, path: str) -> bytes:
     return response.content
 
 
+def get_json(api_base: str, path: str):
+    response = requests.get(f"{api_base}{path}", timeout=120)
+    response.raise_for_status()
+    return response.json()
+
+
 def main(page: ft.Page):
     page.title = "可信会议纪要"
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -100,10 +107,15 @@ def main(page: ft.Page):
     audio_text = ft.Text("请填写本地音频路径", size=12, color="#667085")
     debug_log = ft.Text("准备就绪", size=12, color="#175CD3")
     progress = ft.ProgressRing(visible=False)
+    search_query = ft.TextField(
+        label="检索关键词",
+        hint_text="例如：风险、预算、负责人",
+    )
 
     summary_list = ft.Column(spacing=10)
     claims_list = ft.Column(spacing=10)
     transcript_list = ft.Column(spacing=6)
+    search_results = ft.Column(spacing=8)
     file_picker = ft.FilePicker()
     page.services.append(file_picker)
     def card(content, bgcolor="#FFFFFF", padding=14):
@@ -355,6 +367,74 @@ def main(page: ft.Page):
         finally:
             set_busy(False)
 
+    def search_evidence(_):
+        search_results.controls.clear()
+
+        if not state["meeting_id"]:
+            show_message("请先创建并分析会议")
+            return
+
+        query = search_query.value.strip()
+        if not query:
+            show_message("请输入检索关键词")
+            return
+
+        try:
+            set_busy(True, "正在检索会议证据")
+            data = get_json(
+                api_base.value.strip(),
+                f"/meetings/{state['meeting_id']}/search"
+                f"?q={quote(query)}&limit=8",
+            )
+
+            hits = data.get("hits", [])
+            if not hits:
+                search_results.controls.append(
+                    ft.Text("没有找到匹配的原话证据", color="#667085")
+                )
+
+            for hit in hits:
+                payload = hit.get("payload", {})
+                search_results.controls.append(
+                    card(
+                        ft.Column(
+                            [
+                                ft.Text(
+                                    f"相似度：{hit.get('score', '-')}",
+                                    size=11,
+                                    color="#667085",
+                                ),
+                                ft.Text(
+                                    f"发言人：{payload.get('speaker_id', '-')}",
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                ft.Text(
+                                    f"时间：{format_ms(payload.get('start_ms'))}"
+                                    f" - {format_ms(payload.get('end_ms'))}",
+                                    size=11,
+                                    color="#667085",
+                                ),
+                                ft.Text(
+                                    payload.get("text", ""),
+                                    size=13,
+                                    color="#344054",
+                                ),
+                            ],
+                            spacing=5,
+                        ),
+                        bgcolor="#F9FAFB",
+                        padding=10,
+                    )
+                )
+
+            page.update()
+            show_message("证据检索完成")
+        except Exception as exc:
+            show_message(f"证据检索失败：{exc}")
+        finally:
+            set_busy(False)
+
     render_empty_results()
 
     header = ft.Container(
@@ -434,6 +514,22 @@ def main(page: ft.Page):
         )
     )
 
+    search_card = card(
+        ft.Column(
+            [
+                section_title("4. 证据检索"),
+                search_query,
+                ft.ElevatedButton(
+                    "搜索原话证据",
+                    on_click=search_evidence,
+                    width=360,
+                ),
+                search_results,
+            ],
+            spacing=10,
+        )
+    )
+
     page.add(
         header,
         ft.Container(
@@ -443,6 +539,7 @@ def main(page: ft.Page):
                     form_card,
                     audio_card,
                     action_card,
+                    search_card,
                     section_title("发言人贡献"),
                     summary_list,
                     section_title("可追溯结论"),

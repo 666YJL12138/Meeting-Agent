@@ -1,5 +1,6 @@
 import requests
 import streamlit as st
+from urllib.parse import quote
 
 
 API_BASE = "http://127.0.0.1:8000"
@@ -78,6 +79,7 @@ def init_session_state():
         "meeting": None,
         "meeting_id": "",
         "analysis_result": None,
+        "search_results": None,
         "error": None,
     }
 
@@ -120,6 +122,33 @@ def run_analysis(meeting_id: str):
 def download_pdf(meeting_id: str) -> bytes:
     response = api_get(f"/meetings/{meeting_id}/report/pdf")
     return response.content
+
+
+def search_evidence(meeting_id: str, query: str) -> dict:
+    encoded_query = quote(query.strip())
+    response = api_get(
+        f"/meetings/{meeting_id}/search?q={encoded_query}&limit=8"
+    )
+    return response.json()
+
+
+def review_claim(
+    meeting_id: str,
+    claim_id: str,
+    review_status: str,
+    review_note: str,
+) -> dict:
+    response = requests.post(
+        f"{API_BASE}/meetings/{meeting_id}/claims/{claim_id}/review",
+        json={
+            "review_status": review_status,
+            "review_note": review_note,
+            "reviewer": "web_user",
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def render_meeting_status(meeting: dict | None):
@@ -232,6 +261,34 @@ def render_transcript(result: dict):
         )
 
 
+def render_search_results():
+    data = st.session_state.search_results
+    if not data:
+        return
+
+    st.markdown("### 证据检索结果")
+    hits = data.get("hits", [])
+    if not hits:
+        st.info("没有找到匹配的原话证据")
+        return
+
+    for hit in hits:
+        payload = hit.get("payload", {})
+        st.markdown(
+            f"""
+            <div class="claim-box">
+                <b>相似度：</b>{hit.get("score", "-")}<br/>
+                <b>类型：</b>{payload.get("kind", "-")}
+                &nbsp;|&nbsp;
+                <b>发言人：</b>{payload.get("speaker_id", "-")}<br/>
+                <b>时间：</b>{payload.get("start_ms", "-")} - {payload.get("end_ms", "-")} ms
+                <div class="quote-box">{payload.get("text", "")}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 init_session_state()
 
 st.markdown('<div class="main-title">可信会议纪要 Agent</div>', unsafe_allow_html=True)
@@ -318,9 +375,61 @@ with left:
             except Exception as exc:
                 st.error(f"生成 PDF 失败：{exc}")
 
+    st.divider()
+    st.markdown("### 证据检索")
+    search_query = st.text_input(
+        "检索关键词",
+        placeholder="例如：预算、风险、负责人、排期",
+    )
+
+    if st.button("搜索原话证据", use_container_width=True):
+        if not meeting_id:
+            st.warning("请先创建并分析会议")
+        elif not search_query.strip():
+            st.warning("请输入检索关键词")
+        else:
+            try:
+                st.session_state.search_results = search_evidence(
+                    meeting_id,
+                    search_query,
+                )
+            except Exception as exc:
+                st.error(f"证据检索失败：{exc}")
+
+    current_result = st.session_state.analysis_result or {}
+    review_claims = current_result.get("claims", [])
+
+    if review_claims:
+        st.divider()
+        st.markdown("### 人工审校")
+        claim_ids = [item["claim_id"] for item in review_claims]
+        selected_claim_id = st.selectbox("选择结论", claim_ids)
+        review_status = st.selectbox(
+            "审校状态",
+            ["reviewed", "confirmed", "rejected", "needs_review"],
+        )
+        review_note = st.text_area("审校备注")
+
+        if st.button("提交审校结果", use_container_width=True):
+            try:
+                updated = review_claim(
+                    meeting_id,
+                    selected_claim_id,
+                    review_status,
+                    review_note,
+                )
+                for item in review_claims:
+                    if item.get("claim_id") == selected_claim_id:
+                        item.update(updated)
+                        break
+                st.success("审校结果已保存")
+            except Exception as exc:
+                st.error(f"提交审校失败：{exc}")
+
 with right:
     st.markdown("### 会议状态")
     render_meeting_status(st.session_state.meeting)
+    render_search_results()
 
     result = st.session_state.analysis_result
 

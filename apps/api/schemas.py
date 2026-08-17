@@ -43,4 +43,10 @@ class DiarizationDebugOut(BaseModel):
     speaker_source: str
     speakers: list[dict[str, Any]]
     speaker_segments: list[dict[str, Any]]
+
+
+class ClaimReviewIn(BaseModel):
+    review_status: str = "reviewed"
+    review_note: str = ""
+    reviewer: str = "human"
     
