@@ -18,6 +18,8 @@ from .models import Meeting
 from agents.graph import run_audio_asr_graph
 from services.cache import cache_meeting_state, load_cached_meeting_state
 from services.vector_store import search_meeting
+from services.quality_gate import build_quality_report
+
 
 app = FastAPI(title="Meeting Agent API")
 
@@ -83,9 +85,6 @@ def restore_meeting_from_cache(meeting_id: str) -> dict | None:
 def startup():
     Base.metadata.create_all(bind=engine)
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
 
 @app.post("/meetings", response_model=MeetingOut)
 def create_meeting(payload: MeetingCreate):
@@ -314,5 +313,32 @@ def download_pdf_report(meeting_id: str):
         media_type="application/pdf",
         filename=f"{meeting_id}_trusted_minutes.pdf",
     )
+
+
+@app.get("/meetings/{meeting_id}/quality-report")
+def get_quality_report(meeting_id: str):
+    result = restore_meeting_from_cache(meeting_id)
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Meeting result not found")
+
+    return build_quality_report(result)
+
+
+@app.get("/health")
+def health_check():
+    return {
+        "status": "ok",
+        "service": "meeting-agent-api",
+        "capabilities": {
+            "asr": True,
+            "diarization": True,
+            "contribution_extraction": True,
+            "pdf_report": True,
+            "redis_cache": True,
+            "qdrant_search": True,
+            "local_bge": True,
+        },
+    }
 
 

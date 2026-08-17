@@ -19,3 +19,6 @@ apps/mobile/build/
 *.bak*
 gradle_build.log
 mobile_build_latest.log
+
+models/
+*.partial_*
