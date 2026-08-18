@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from uuid import uuid4
 from pathlib import Path
 import json
@@ -39,6 +39,11 @@ class SendReportEmailRequest(BaseModel):
     subject: str | None = None
     body: str | None = None
 
+class RunAgentWorkflowRequest(BaseModel):
+    send_email: bool = False
+    to_email: EmailStr | None = None
+    email_subject: str | None = None
+    email_body: str | None = None
 
 def get_latest_report_pdf_path(meeting_id: str) -> str:
     report_dir = Path("outputs/reports")
@@ -379,6 +384,38 @@ def health_check():
     }
 
 
+def build_evidence_from_asr(meeting_id: str, asr_result: dict) -> list[dict]:
+    spans = asr_result.get("transcript_spans", [])
+    evidence_links = asr_result.get("evidence_links", [])
+    evidence_id_by_span_id = {
+        item.get("span_id"): item.get("evidence_id")
+        for item in evidence_links
+        if item.get("span_id") and item.get("evidence_id")
+    }
+
+    evidence = []
+    for index, span in enumerate(spans):
+        text = str(span.get("text", "")).strip()
+        if not text:
+            continue
+
+        span_id = span.get("span_id")
+        if span_id:
+            evidence_id = evidence_id_by_span_id.get(span_id) or f"ev_{span_id}"
+        else:
+            evidence_id = f"seg_{index:04d}"
+
+        evidence.append({
+            "evidence_id": evidence_id,
+            "meeting_id": meeting_id,
+            "speaker_id": span.get("speaker_id", "speaker_unknown"),
+            "text": text,
+            "start_ms": int(span.get("start_ms", 0)),
+            "end_ms": int(span.get("end_ms", 0)),
+        })
+
+    return evidence
+
 @app.post("/meetings/{meeting_id}/run-agent")
 def run_agent(meeting_id: str):
     asr_result = load_asr_result_for_agent(meeting_id)
@@ -417,6 +454,49 @@ def run_agent(meeting_id: str):
     result["agent_result_path"] = output_path
     return result
 
+
+@app.post("/meetings/{meeting_id}/run-agent-workflow")
+def run_agent_workflow(
+    meeting_id: str,
+    request: RunAgentWorkflowRequest | None = None,
+):
+    request = request or RunAgentWorkflowRequest()
+    asr_result = load_asr_result_for_agent(meeting_id)
+    evidence = build_evidence_from_asr(meeting_id, asr_result)
+
+    if not evidence:
+        raise HTTPException(
+            status_code=400,
+            detail="No evidence found, please run /run-asr first",
+        )
+
+    state = {
+        "meeting_id": meeting_id,
+        "title": asr_result.get("title", "浼氳绾"),
+        "host": asr_result.get("host", "-"),
+        "language": asr_result.get("language", "zh-CN"),
+        "audio_info": asr_result.get("audio_info", {}),
+        "evidence": evidence,
+        "speaker_ids": sorted({item["speaker_id"] for item in evidence}),
+        "contributions": [],
+        "action_items": [],
+        "risks": [],
+        "rag_supplements": [],
+        "claims": [],
+        "speaker_summaries": [],
+        "evidence_links": [],
+        "send_email": request.send_email,
+        "to_email": str(request.to_email) if request.to_email else None,
+        "email_subject": request.email_subject,
+        "email_body": request.email_body,
+        "email_delivery": None,
+        "errors": [],
+    }
+
+    result = build_meeting_graph().invoke(state)
+    output_path = save_agent_result(meeting_id, result)
+    result["agent_result_path"] = output_path
+    return result
 
 @app.post("/meetings/{meeting_id}/report/email")
 def send_report_email_api(meeting_id: str, request: SendReportEmailRequest):
