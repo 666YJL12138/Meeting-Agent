@@ -9,6 +9,9 @@ class EvidenceItem(BaseModel):
     text: str
     start_ms: int
     end_ms: int
+    asr_confidence: float = Field(default=0.5, ge=0, le=1)
+    speaker_confidence: float = Field(default=0.5, ge=0, le=1)
+    speaker_source: str = "unknown"
 
 
 class AgentClaim(BaseModel):
@@ -19,7 +22,9 @@ class AgentClaim(BaseModel):
     quote: str
     start_ms: int
     end_ms: int
-    confidence: float = Field(ge=0, le=1)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    confidence_breakdown: dict[str, float] = Field(default_factory=dict)
+    confidence_method: str = "evidence_weighted_v1"
     support_status: Literal["supported", "partially_supported", "unsupported"] = "supported"
 
 

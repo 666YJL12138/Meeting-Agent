@@ -63,6 +63,9 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
 
     payload = {
         "meeting_id": state.get("meeting_id"),
+        "title": state.get("title", "会议纪要"),
+        "host": state.get("host", "-"),
+        "language": state.get("language", "zh-CN"),
         "status": state.get("status"),
         "audio_info": state.get("audio_info", {}),
         "voice_segments": state.get("voice_segments", []),
@@ -136,6 +139,7 @@ def create_meeting(payload: MeetingCreate):
         "title": payload.title,
         "host": payload.host,
         "language": payload.language,
+        "participants": payload.participants,
         "status": "created",
         "audio_uri": None,
         "progress": 0,
@@ -412,6 +416,9 @@ def build_evidence_from_asr(meeting_id: str, asr_result: dict) -> list[dict]:
             "text": text,
             "start_ms": int(span.get("start_ms", 0)),
             "end_ms": int(span.get("end_ms", 0)),
+            "asr_confidence": float(span.get("asr_confidence", 0.5)),
+            "speaker_confidence": float(span.get("speaker_confidence", 0.5)),
+            "speaker_source": span.get("speaker_source", "unknown"),
         })
 
     return evidence
@@ -472,7 +479,7 @@ def run_agent_workflow(
 
     state = {
         "meeting_id": meeting_id,
-        "title": asr_result.get("title", "浼氳绾"),
+        "title": asr_result.get("title", "会议纪要"),
         "host": asr_result.get("host", "-"),
         "language": asr_result.get("language", "zh-CN"),
         "audio_info": asr_result.get("audio_info", {}),

@@ -41,6 +41,31 @@ def safe_text(value) -> str:
     return escape(str(value))
 
 
+def format_confidence_breakdown(value: dict | None) -> str:
+    if not isinstance(value, dict) or not value:
+        return "-"
+
+    labels = {
+        "evidence_binding": "证据绑定",
+        "quote_match": "原话匹配",
+        "speaker_match": "说话人匹配",
+        "time_match": "时间匹配",
+        "asr_quality": "ASR质量",
+        "diarization_quality": "声纹质量",
+    }
+
+    parts = []
+    for key, label in labels.items():
+        if key not in value:
+            continue
+        try:
+            parts.append(f"{label}={float(value[key]):.2f}")
+        except (TypeError, ValueError):
+            parts.append(f"{label}={safe_text(value[key])}")
+
+    return "；".join(parts) or "-"
+
+
 def build_styles():
     styles = getSampleStyleSheet()
 
@@ -140,6 +165,13 @@ def generate_meeting_pdf(meeting: dict) -> str:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
     story.append(meta_table)
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        "评分说明：证据支撑度由系统根据证据绑定、原话匹配、"
+        "说话人/时间一致性、ASR质量和声纹归因质量计算，"
+        "不是语言模型自报的概率。",
+        styles["Small"],
+    ))
 
     story.append(Paragraph("一、发言人关键贡献概览", styles["Heading1"]))
 
@@ -156,8 +188,9 @@ def generate_meeting_pdf(meeting: dict) -> str:
                 evidence_ids = ", ".join(point.get("evidence_ids", []))
                 text = (
                     f"类型：{safe_text(point.get('claim_type'))}；"
-                    f"置信度：{point.get('confidence', '-')}; "
+                    f"证据支撑度：{point.get('confidence', '-')}; "
                     f"证据：{safe_text(evidence_ids)}<br/>"
+                    f"评分明细：{safe_text(format_confidence_breakdown(point.get('confidence_breakdown')))}<br/>"
                     f"{safe_text(point.get('statement'))}"
                 )
                 story.append(Paragraph(text, styles["BodyText"]))
@@ -190,7 +223,8 @@ def generate_meeting_pdf(meeting: dict) -> str:
 
             story.append(Paragraph(
                 f"证据ID：{safe_text(', '.join(claim.get('evidence_ids', [])))}；"
-                f"置信度：{claim.get('confidence', '-')}; "
+                f"证据支撑度：{claim.get('confidence', '-')}; "
+                f"评分明细：{safe_text(format_confidence_breakdown(claim.get('confidence_breakdown')))}；"
                 f"审核状态：{safe_text(claim.get('review_status'))}",
                 styles["Small"],
             ))

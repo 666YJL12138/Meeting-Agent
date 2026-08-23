@@ -5,31 +5,42 @@ import wave
 
 import numpy as np
 import torch
+from dotenv import load_dotenv
+from pyannote.audio import Pipeline
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ENV_FILE = PROJECT_ROOT / ".env"
 
-PYANNOTE_MODEL = os.getenv(
-    "PYANNOTE_MODEL",
-    "pyannote/speaker-diarization-community-1",
-)
+load_dotenv(ENV_FILE, override=True)
 
-HF_TOKEN = os.getenv("HF_TOKEN")
+DEFAULT_PYANNOTE_MODEL = "pyannote/speaker-diarization-community-1"
 
 
 @lru_cache(maxsize=1)
 def get_diarization_pipeline():
     try:
-        from pyannote.audio import Pipeline
-        import torch
+        load_dotenv(ENV_FILE, override=True)
 
-        if Path(PYANNOTE_MODEL).exists():
-            pipeline = Pipeline.from_pretrained(PYANNOTE_MODEL)
+        model_value = os.getenv("PYANNOTE_MODEL", DEFAULT_PYANNOTE_MODEL).strip()
+        hf_token = os.getenv("HF_TOKEN")
+        model_path = Path(model_value).expanduser()
+
+        if model_path.is_dir():
+            config_path = model_path / "config.yaml"
+            if not config_path.is_file():
+                raise FileNotFoundError(
+                    f"Local pyannote model is incomplete; missing: {config_path}"
+                )
+
+            print(f"[diarization] loading local pyannote model: {model_path}")
+            pipeline = Pipeline.from_pretrained(model_path)
         else:
-            if not HF_TOKEN:
+            if not hf_token:
                 raise RuntimeError("HF_TOKEN is not set for pyannote model download")
 
             pipeline = Pipeline.from_pretrained(
-                PYANNOTE_MODEL,
-                token=HF_TOKEN,
+                model_value,
+                token=hf_token,
             )
 
         if torch.cuda.is_available():
@@ -101,6 +112,7 @@ def load_waveform_for_pyannote(wav_path: str) -> dict:
         "sample_rate": sample_rate,
     }
 
+
 def parse_pyannote_output(annotation) -> list[dict]:
     speaker_segments = []
 
@@ -113,7 +125,6 @@ def parse_pyannote_output(annotation) -> list[dict]:
                 "confidence": 0.8,
                 "source": "pyannote",
             })
-
     else:
         try:
             for turn, speaker in annotation:
@@ -187,6 +198,7 @@ def assign_speakers_to_spans(
     for span in transcript_spans:
         best_speaker = "speaker_unknown"
         best_overlap = 0
+        best_source = "unknown"
 
         for seg in speaker_segments:
             overlap = overlap_ms(
@@ -199,6 +211,7 @@ def assign_speakers_to_spans(
             if overlap > best_overlap:
                 best_overlap = overlap
                 best_speaker = seg["speaker_id"]
+                best_source = seg.get("source", "unknown")
 
         span_duration = max(1, span["end_ms"] - span["start_ms"])
         speaker_confidence = round(best_overlap / span_duration, 2)
@@ -210,6 +223,7 @@ def assign_speakers_to_spans(
             **span,
             "speaker_id": best_speaker,
             "speaker_confidence": speaker_confidence,
+            "speaker_source": best_source,
         })
 
     return assigned
@@ -239,4 +253,3 @@ def detect_source(speaker_id: str, speaker_segments: list[dict]) -> str:
         if seg["speaker_id"] == speaker_id:
             return seg.get("source", "unknown")
     return "unknown"
-

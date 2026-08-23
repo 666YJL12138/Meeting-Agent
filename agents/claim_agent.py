@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -7,6 +8,9 @@ from pydantic import ValidationError
 
 from llm.gateway import LLMGateway
 from llm.schemas import AgentClaim
+
+
+logger = logging.getLogger(__name__)
 
 
 def _repair_mojibake(value):
@@ -28,8 +32,8 @@ class ClaimAgent:
         self.task_type = task_type
         self.claim_type = claim_type
         self.llm = LLMGateway()
-        self.max_evidence_items = int(os.getenv("LLM_MAX_EVIDENCE_ITEMS", "8"))
-        self.max_evidence_chars = int(os.getenv("LLM_MAX_EVIDENCE_CHARS", "180"))
+        self.max_evidence_items = int(os.getenv("LLM_MAX_EVIDENCE_ITEMS", "12"))
+        self.max_evidence_chars = int(os.getenv("LLM_MAX_EVIDENCE_CHARS", "160"))
         prompt_path = Path("prompts/claim_extraction.yaml")
         self.prompt = yaml.safe_load(prompt_path.read_text(encoding="utf-8"))
 
@@ -47,10 +51,31 @@ class ClaimAgent:
             evidence_json=json.dumps(compact_evidence, ensure_ascii=False, indent=2),
         )
         result = self.llm.chat_json(self.prompt["system"], user_prompt)
+        raw_claims = result.get("claims", [])
+        if not isinstance(raw_claims, list):
+            raise ValueError("LLM claims field must be a list")
+
         claims = []
-        for item in result.get("claims", []):
+        for index, item in enumerate(raw_claims):
+            if not isinstance(item, dict):
+                logger.warning(
+                    "Skipping non-object claim: task=%s index=%s value=%r",
+                    self.task_type,
+                    index,
+                    item,
+                )
+                continue
+
             try:
                 claims.append(AgentClaim(**_repair_mojibake(item)))
-            except ValidationError:
+            except ValidationError as exc:
+                logger.warning(
+                    "Skipping invalid claim: task=%s index=%s errors=%s item=%s",
+                    self.task_type,
+                    index,
+                    exc.errors(),
+                    item,
+                )
                 continue
+
         return claims

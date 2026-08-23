@@ -7,9 +7,13 @@ system: |
   每条结论必须包含 evidence_ids、speaker_id、quote、start_ms、end_ms。
   如果证据不足，support_status 输出 unsupported。
   只输出 JSON，不要 Markdown，不要 ```json 代码块。
-  每次最多输出 1 条 claims。
+  每次可输出多条 claims，最多 5 条。
   summary 不超过 30 个中文字符。
-  quote 不超过 60 个中文字符。
+  quote 必须逐字复制 evidence.text，不能纠正错别字、不能改写、不能截断。
+  evidence_ids 必须逐字复制 evidence.evidence_id。
+  speaker_id、start_ms、end_ms 必须逐字复制对应 evidence 字段。
+  每条 claim 默认只绑定一条 evidence。
+  不要填写 confidence，系统会根据证据和 ASR/声纹质量重新计算。
   不要解释，不要分析过程，不要输出多余字段。
   输出必须是单行紧凑 JSON。
 
@@ -21,4 +25,4 @@ user_template: |
   {evidence_json}
 
   输出格式：
-  {{"claims":[{{"speaker_id":"SPEAKER_00","claim_type":"{claim_type}","summary":"一句话总结","evidence_ids":["seg_0001"],"quote":"必须来自原话","start_ms":0,"end_ms":0,"confidence":0.8,"support_status":"supported"}}]}}
+  {{"claims":[{{"speaker_id":"从 evidence 原样复制","claim_type":"{claim_type}","summary":"一句话总结","evidence_ids":["从 evidence.evidence_id 原样复制"],"quote":"从 evidence.text 原样复制","start_ms":0,"end_ms":0,"support_status":"supported"}}]}}
