@@ -17,25 +17,30 @@ def _fallback_claim(
     exclude_keywords: list[str] | None = None,
 ) -> list[dict]:
     exclude_keywords = exclude_keywords or []
+    claims = []
+
     for item in state["evidence"]:
         text = item.get("text", "")
         if any(keyword in text for keyword in exclude_keywords):
             continue
-        if any(keyword in text for keyword in keywords):
-            return [
-                AgentClaim(
-                    speaker_id=item["speaker_id"],
-                    claim_type=claim_type,
-                    summary=summary,
-                    evidence_ids=[item["evidence_id"]],
-                    quote=text[:60],
-                    start_ms=item["start_ms"],
-                    end_ms=item["end_ms"],
-                    confidence=0.55,
-                    support_status="supported",
-                ).model_dump()
-            ]
-    return []
+        if not any(keyword in text for keyword in keywords):
+            continue
+
+        claims.append(
+            AgentClaim(
+                speaker_id=item["speaker_id"],
+                claim_type=claim_type,
+                summary=summary,
+                evidence_ids=[item["evidence_id"]],
+                quote=text[:60],
+                start_ms=item["start_ms"],
+                end_ms=item["end_ms"],
+                confidence=0.55,
+                support_status="supported",
+            ).model_dump()
+        )
+
+    return claims
 
 
 def extract_contributions(state: MeetingAgentState) -> MeetingAgentState:
@@ -64,7 +69,22 @@ def extract_action_items(state: MeetingAgentState) -> MeetingAgentState:
         state["action_items"] = _fallback_claim(
             state,
             "\u884c\u52a8\u9879",
-            ["\u5f85\u529e", "\u6574\u7406", "\u6d4b\u8bd5\u8868\u683c", "\u8bb0\u5f55", "\u9a8c\u6536\u6d41\u7a0b", "\u5b8c\u6210"],
+            [
+                "\u5f85\u529e",
+                "\u8d1f\u8d23",
+                "\u5206\u5de5",
+                "\u6574\u7406",
+                "\u6d4b\u8bd5\u8868\u683c",
+                "\u8bb0\u5f55",
+                "\u9a8c\u6536",
+                "\u9a8c\u6536\u6d41\u7a0b",
+                "\u63d0\u4ea4",
+                "\u786e\u8ba4",
+                "\u5b8c\u6210",
+                "\u8ddf\u8fdb",
+                "\u5b89\u6392",
+                "\u540c\u6b65",
+            ],
             "\u6839\u636e\u539f\u8bdd\u63d0\u53d6\u7684\u884c\u52a8\u9879",
             exclude_keywords=["\u98ce\u9669\u70b9", "\u98ce\u9669"],
         )

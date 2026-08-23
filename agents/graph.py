@@ -41,11 +41,14 @@ def asr_node(state: MeetingState) -> MeetingState:
 
 
 def diarization_node(state: MeetingState) -> MeetingState:
+    participants = state.get("participants", [])
+    expected_speakers = len(participants) if len(participants) >= 2 else None
+
     speaker_segments = diarize_audio(
         wav_path=state["normalized_audio_uri"],
         voice_segments=state.get("voice_segments", []),
-        min_speakers=None,
-        max_speakers=None,
+        min_speakers=expected_speakers,
+        max_speakers=expected_speakers,
     )
 
     assigned_spans = assign_speakers_to_spans(
@@ -179,6 +182,7 @@ def run_audio_asr_graph(meeting: dict) -> dict:
         "meeting_id": meeting["meeting_id"],
         "title": meeting["title"],
         "audio_uri": meeting["audio_uri"],
+        "participants": meeting.get("participants", []),
         "status": "processing",
         "progress": 10,
         "errors": [],
