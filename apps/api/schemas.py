@@ -1,5 +1,23 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
+
+
+JobStatus = Literal[
+    "created",
+    "uploaded",
+    "queued",
+    "audio_normalizing",
+    "asr_processing",
+    "diarization_processing",
+    "evidence_building",
+    "agent_processing",
+    "quality_checking",
+    "pdf_generating",
+    "completed",
+    "failed",
+    "cancelled",
+]
+
 
 class MeetingCreate(BaseModel):
     title: str
@@ -32,6 +50,34 @@ class MeetingStatusOut(BaseModel):
     status: str
     progress: int = 0
     error: Optional[str] = None
+
+
+class JobHistoryItem(BaseModel):
+    timestamp: str
+    status: str
+    progress: int = Field(default=0, ge=0, le=100)
+    stage: str = ""
+
+
+class JobStatusOut(BaseModel):
+    job_id: str
+    meeting_id: str
+    status: JobStatus
+    progress: int = Field(default=0, ge=0, le=100)
+    stage: str = ""
+    error: str | None = None
+    result: dict[str, Any] | None = None
+    history: list[JobHistoryItem] = Field(
+        default_factory=list
+    )
+
+
+class JobHistoryOut(BaseModel):
+    job_id: str
+    meeting_id: str
+    history: list[JobHistoryItem] = Field(
+        default_factory=list
+    )
 
 
 class SpeakerMappingIn(BaseModel):

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form
 from uuid import uuid4
 from pathlib import Path
 import json
@@ -8,11 +8,15 @@ from services.pdf_report import generate_meeting_pdf
 from .schemas import (
     ClaimReviewIn,
     DiarizationDebugOut,
+    JobHistoryOut,
+    JobStatusOut,
     MeetingCreate,
     MeetingOut,
     MeetingStatusOut,
     SpeakerMappingIn,
 )
+from services.job_store import create_job, get_job, update_job
+from services.workflow_runner import run_full_workflow
 from .db import Base, engine
 from .models import Meeting
 from agents.graph import run_audio_asr_graph
@@ -521,6 +525,120 @@ def send_report_email_api(meeting_id: str, request: SendReportEmailRequest):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return result
+
+
+@app.post("/meetings/analyze")
+async def analyze_meeting(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    host: str = Form(...),
+    language: str = Form("zh-CN"),
+    participants: str = Form(""),
+    send_email: bool = Form(False),
+    to_email: str | None = Form(None),
+):
+    meeting_id = uuid4().hex
+
+    suffix = (
+        Path(file.filename or "").suffix
+        or ".wav"
+    )
+
+    audio_path = (
+        AUDIO_DIR / f"{meeting_id}{suffix}"
+    )
+
+    with audio_path.open("wb") as target:
+        shutil.copyfileobj(
+            file.file,
+            target,
+        )
+
+    participant_list = [
+        item.strip()
+        for item in participants
+        .replace(",", "\n")
+        .splitlines()
+        if item.strip()
+    ]
+
+    meeting = {
+        "meeting_id": meeting_id,
+        "title": title.strip()
+        or "会议纪要",
+        "host": host.strip()
+        or "-",
+        "language": language,
+        "participants": participant_list,
+        "status": "audio_uploaded",
+        "audio_uri": str(audio_path),
+        "progress": 10,
+        "send_email": send_email,
+        "to_email": to_email,
+    }
+
+    STORE[meeting_id] = meeting
+
+    job = create_job(meeting_id)
+
+    update_job(
+        job["job_id"],
+        status="queued",
+        progress=10,
+        stage="等待后台处理",
+    )
+
+    background_tasks.add_task(
+        run_full_workflow,
+        job["job_id"],
+        meeting,
+    )
+
+    return {
+        "job_id": job["job_id"],
+        "meeting_id": meeting_id,
+        "status": "queued",
+        "progress": 10,
+        "stage": "等待后台处理",
+    }
+
+
+@app.get(
+    "/jobs/{job_id}",
+    response_model=JobStatusOut,
+)
+def get_job_status(job_id: str):
+    job = get_job(job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found",
+        )
+
+    return job
+
+
+@app.get(
+    "/jobs/{job_id}/history",
+    response_model=JobHistoryOut,
+)
+def get_job_history(job_id: str):
+    job = get_job(job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found",
+        )
+
+    return {
+        "job_id": job_id,
+        "meeting_id": job["meeting_id"],
+        "history": job.get("history", []),
+    }
+
 
 
 

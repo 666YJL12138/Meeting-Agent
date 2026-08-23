@@ -1,15 +1,62 @@
-﻿from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 
 from .state import MeetingState
-from services.audio import normalize_audio_to_wav, inspect_wav, detect_voice_segments
 from services.asr import transcribe_audio
-from services.diarization import diarize_audio, assign_speakers_to_spans, build_speakers
-from services.contribution import extract_contributions, build_speaker_summaries
+from services.audio import (
+    detect_voice_segments,
+    inspect_wav,
+    normalize_audio_to_wav,
+)
 from services.cache import cache_meeting_state
+from services.contribution import (
+    build_speaker_summaries,
+    extract_contributions,
+)
+from services.diarization import (
+    assign_speakers_to_spans,
+    build_speakers,
+    diarize_audio,
+)
 from services.vector_store import index_meeting
 
 
+def update_job_progress(
+    state: MeetingState,
+    *,
+    status: str,
+    progress: int,
+    stage: str,
+) -> None:
+    """Best-effort progress reporting for the asynchronous workflow."""
+    job_id = state.get("job_id")
+    if not job_id:
+        return
+
+    try:
+        from services.job_store import update_job
+
+        update_job(
+            job_id,
+            status=status,
+            progress=progress,
+            stage=stage,
+        )
+    except Exception as exc:
+        # Redis 不可用时不能让 ASR 主流程失败。
+        print(
+            f"[job-progress] update failed for {job_id}: {exc}",
+            flush=True,
+        )
+
+
 def audio_quality_node(state: MeetingState) -> MeetingState:
+    update_job_progress(
+        state,
+        status="audio_normalizing",
+        progress=10,
+        stage="音频标准化与语音段检测",
+    )
+
     normalized_path = normalize_audio_to_wav(
         input_path=state["audio_uri"],
         meeting_id=state["meeting_id"],
@@ -17,6 +64,13 @@ def audio_quality_node(state: MeetingState) -> MeetingState:
 
     audio_info = inspect_wav(normalized_path)
     voice_segments = detect_voice_segments(normalized_path)
+
+    update_job_progress(
+        state,
+        status="audio_normalizing",
+        progress=25,
+        stage="音频预处理完成",
+    )
 
     return {
         "normalized_audio_uri": normalized_path,
@@ -28,9 +82,23 @@ def audio_quality_node(state: MeetingState) -> MeetingState:
 
 
 def asr_node(state: MeetingState) -> MeetingState:
+    update_job_progress(
+        state,
+        status="asr_processing",
+        progress=30,
+        stage="faster-whisper 语音识别",
+    )
+
     spans = transcribe_audio(
         wav_path=state["normalized_audio_uri"],
         meeting_id=state["meeting_id"],
+    )
+
+    update_job_progress(
+        state,
+        status="asr_processing",
+        progress=45,
+        stage="语音识别完成",
     )
 
     return {
@@ -41,8 +109,19 @@ def asr_node(state: MeetingState) -> MeetingState:
 
 
 def diarization_node(state: MeetingState) -> MeetingState:
+    update_job_progress(
+        state,
+        status="diarization_processing",
+        progress=50,
+        stage="pyannote 说话人分离",
+    )
+
     participants = state.get("participants", [])
-    expected_speakers = len(participants) if len(participants) >= 2 else None
+    expected_speakers = (
+        len(participants)
+        if len(participants) >= 2
+        else None
+    )
 
     speaker_segments = diarize_audio(
         wav_path=state["normalized_audio_uri"],
@@ -59,6 +138,13 @@ def diarization_node(state: MeetingState) -> MeetingState:
 
     speakers = build_speakers(speaker_segments)
 
+    update_job_progress(
+        state,
+        status="diarization_processing",
+        progress=62,
+        stage="说话人归因完成",
+    )
+
     return {
         "speaker_segments": speaker_segments,
         "transcript_spans": assigned_spans,
@@ -69,6 +155,13 @@ def diarization_node(state: MeetingState) -> MeetingState:
 
 
 def evidence_stub_node(state: MeetingState) -> MeetingState:
+    update_job_progress(
+        state,
+        status="evidence_building",
+        progress=65,
+        stage="构建可追溯证据链",
+    )
+
     evidence_links = []
 
     for span in state.get("transcript_spans", []):
@@ -81,6 +174,13 @@ def evidence_stub_node(state: MeetingState) -> MeetingState:
             "speaker_id": span.get("speaker_id"),
         })
 
+    update_job_progress(
+        state,
+        status="evidence_building",
+        progress=72,
+        stage="证据链构建完成",
+    )
+
     return {
         "evidence_links": evidence_links,
         "progress": 92,
@@ -89,6 +189,13 @@ def evidence_stub_node(state: MeetingState) -> MeetingState:
 
 
 def contribution_node(state: MeetingState) -> MeetingState:
+    update_job_progress(
+        state,
+        status="agent_processing",
+        progress=75,
+        stage="抽取发言人关键贡献",
+    )
+
     claims = extract_contributions(
         meeting_id=state["meeting_id"],
         transcript_spans=state.get("transcript_spans", []),
@@ -100,6 +207,13 @@ def contribution_node(state: MeetingState) -> MeetingState:
         speakers=state.get("speakers", []),
     )
 
+    update_job_progress(
+        state,
+        status="agent_processing",
+        progress=82,
+        stage="关键贡献抽取完成",
+    )
+
     return {
         "claims": claims,
         "speaker_summaries": speaker_summaries,
@@ -109,6 +223,13 @@ def contribution_node(state: MeetingState) -> MeetingState:
 
 
 def index_node(state: MeetingState) -> MeetingState:
+    update_job_progress(
+        state,
+        status="agent_processing",
+        progress=85,
+        stage="写入 Qdrant 并缓存 Redis",
+    )
+
     errors = list(state.get("errors", []))
     index_status = []
 
@@ -133,6 +254,13 @@ def index_node(state: MeetingState) -> MeetingState:
         errors.append(f"redis caching failed: {exc}")
         index_status.append("redis:failed")
 
+    update_job_progress(
+        state,
+        status="agent_processing",
+        progress=95,
+        stage="向量索引与缓存完成",
+    )
+
     return {
         "progress": 98,
         "status": "indexed",
@@ -142,6 +270,13 @@ def index_node(state: MeetingState) -> MeetingState:
 
 
 def finish_node(state: MeetingState) -> MeetingState:
+    update_job_progress(
+        state,
+        status="agent_processing",
+        progress=98,
+        stage="ASR 与证据阶段完成，准备生成报告",
+    )
+
     return {
         "progress": 100,
         "status": "completed",
@@ -176,9 +311,12 @@ AUDIO_ASR_GRAPH = build_audio_asr_graph()
 
 def run_audio_asr_graph(meeting: dict) -> dict:
     if not meeting.get("audio_uri"):
-        raise ValueError("audio_uri is required before running ASR graph")
+        raise ValueError(
+            "audio_uri is required before running ASR graph"
+        )
 
     return AUDIO_ASR_GRAPH.invoke({
+        "job_id": meeting.get("job_id"),
         "meeting_id": meeting["meeting_id"],
         "title": meeting["title"],
         "audio_uri": meeting["audio_uri"],
@@ -190,7 +328,7 @@ def run_audio_asr_graph(meeting: dict) -> dict:
         "speakers": [],
         "speaker_segments": [],
         "speaker_mapping": {},
-        "claims": [], 
+        "claims": [],
         "speaker_summaries": [],
         "evidence_links": [],
         "index_status": [],

@@ -2,6 +2,7 @@ from typing import TypedDict, List, Dict, Any
 
 
 class MeetingState(TypedDict, total=False):
+    job_id: str | None
     meeting_id: str
     title: str
     audio_uri: str
