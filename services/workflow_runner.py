@@ -132,7 +132,7 @@ def run_full_workflow(
         update_job(
             job_id,
             status="audio_normalizing",
-            progress=5,
+            progress=10,
             stage="音频预处理",
             started_at=now_iso(),
         )
@@ -164,8 +164,8 @@ def run_full_workflow(
         update_job(
             job_id,
             status="agent_processing",
-            progress=65,
-            stage="多 Agent 抽取会议内容",
+            progress=98,
+            stage="ASR 与证据阶段完成，开始多 Agent 抽取",
         )
 
         state = {
@@ -215,7 +215,7 @@ def run_full_workflow(
         update_job(
             job_id,
             status="pdf_generating",
-            progress=90,
+            progress=99,
             stage="生成可信 PDF",
         )
 

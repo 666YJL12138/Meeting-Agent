@@ -1,12 +1,12 @@
 from pathlib import Path
 import io
 from urllib.parse import quote
-
+import asyncio
 import flet as ft
 import requests
 
 
-DEFAULT_API_BASE = "http://127.0.0.1:8000"
+DEFAULT_API_BASE = "http://10.193.23.250:8000"
 DEFAULT_AUDIO_PATH = r"D:\futurework\Meeting-Agent\Meeting-Agent\day2_chinese_meeting_sample.wav"
 DEFAULT_AUDIO_LABEL = "尚未选择音频文件"
 
@@ -41,6 +41,83 @@ def label_claim_type(value: str) -> str:
 
 def label_status(value: str) -> str:
     return STATUS_LABELS.get(value or "", value or "-")
+
+
+def post_analyze(
+    api_base: str,
+    title: str,
+    host: str,
+    participants: str,
+    audio_name: str,
+    audio_bytes: bytes,
+):
+    data = {
+        "title": title,
+        "host": host,
+        "language": "zh-CN",
+        "participants": participants,
+        "send_email": "false",
+    }
+
+    files = {
+        "file": (
+            audio_name,
+            io.BytesIO(audio_bytes),
+            "application/octet-stream",
+        )
+    }
+
+    response = requests.post(
+        f"{api_base}/meetings/analyze",
+        data=data,
+        files=files,
+        timeout=120,
+    )
+
+    response.raise_for_status()
+    return response.json()
+
+
+async def poll_job_async(
+    api_base: str,
+    job_id: str,
+    on_update,
+    on_error=None,
+    max_consecutive_errors: int = 5,
+):
+    consecutive_errors = 0
+    last_job = None
+
+    while True:
+        try:
+            job = await asyncio.to_thread(
+                get_json,
+                api_base,
+                f"/jobs/{job_id}",
+            )
+            consecutive_errors = 0
+            last_job = job
+        except requests.RequestException as exc:
+            consecutive_errors += 1
+            if on_error:
+                await on_error(exc, consecutive_errors)
+
+            if consecutive_errors >= max_consecutive_errors:
+                return last_job
+
+            await asyncio.sleep(3)
+            continue
+
+        await on_update(job)
+
+        if job.get("status") in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            return job
+
+        await asyncio.sleep(2)
 
 
 def post_json(api_base: str, path: str, payload: dict | None = None):
@@ -85,10 +162,14 @@ def main(page: ft.Page):
 
     state = {
         "meeting_id": "",
+        "job_id": "",
         "audio_path": "",
         "audio_name": "",
         "audio_bytes": None,
         "result": None,
+        "job_status": None,
+        "history": [],
+        "polling": False,
     }
 
     api_base = ft.TextField(label="后端地址", value=DEFAULT_API_BASE)
@@ -115,6 +196,7 @@ def main(page: ft.Page):
     summary_list = ft.Column(spacing=10)
     claims_list = ft.Column(spacing=10)
     transcript_list = ft.Column(spacing=6)
+    history_list = ft.Column(spacing=6)
     search_results = ft.Column(spacing=8)
     file_picker = ft.FilePicker()
     page.services.append(file_picker)
@@ -182,6 +264,155 @@ def main(page: ft.Page):
         summary_list.controls.append(ft.Text("完成分析后展示发言人贡献。", color="#667085"))
         claims_list.controls.append(ft.Text("完成分析后展示可追溯结论。", color="#667085"))
         transcript_list.controls.append(ft.Text("完成分析后展示原始转写。", color="#667085"))
+
+    def render_history(history: list[dict]):
+        history_list.controls.clear()
+
+        if not history:
+            history_list.controls.append(
+                ft.Text(
+                    "暂无任务历史",
+                    color="#667085",
+                )
+            )
+            page.update()
+            return
+
+        for item in history:
+            progress_value = item.get(
+                "progress",
+                0,
+            )
+
+            status_value = item.get(
+                "status",
+                "-",
+            )
+
+            stage_value = item.get(
+                "stage",
+                "-",
+            )
+            timestamp_value = item.get(
+                "timestamp",
+                "",
+            )
+
+            history_list.controls.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Text(
+                                f"{progress_value}%  {stage_value}",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            ft.Text(
+                                status_value,
+                                size=11,
+                                color="#667085",
+                            ),
+                            ft.Text(
+                                timestamp_value,
+                                size=10,
+                                color="#98A2B3",
+                            ),
+                        ],
+                        spacing=2,
+                    ),
+                    padding=10,
+                    bgcolor="#F2F4F7",
+                    border_radius=8,
+                )
+            )
+
+        page.update()
+
+    def apply_job_update(current: dict):
+        state["job_status"] = current
+        state["history"] = current.get("history", [])
+
+        progress_value = int(current.get("progress", 0))
+        stage_value = current.get("stage", "-")
+        status_value = current.get("status", "-")
+
+        status_text.value = f"{progress_value}%  {stage_value}"
+        audio_text.value = f"任务状态：{status_value}"
+        render_history(state["history"])
+        page.update()
+
+    async def on_job_update(current: dict):
+        apply_job_update(current)
+
+    async def on_job_error(exc: Exception, attempt: int):
+        current = state.get("job_status") or {}
+        progress_value = int(current.get("progress", 0))
+        stage_value = current.get("stage", "当前阶段")
+
+        status_text.value = (
+            f"{progress_value}%  状态查询暂时失败"
+        )
+        audio_text.value = (
+            f"任务仍可能执行中：{stage_value}，正在第 {attempt} 次重试"
+        )
+
+        if attempt >= 5:
+            show_message(
+                "暂时无法刷新任务状态，后台任务可能仍在继续。"
+                "请点击“刷新任务状态”或“继续等待分析”。"
+            )
+        else:
+            show_message(
+                f"状态查询暂时失败，将自动重试（{attempt}/5）：{exc}"
+            )
+
+    async def load_job_result(job: dict):
+        if job.get("status") != "completed":
+            return
+
+        set_busy(True, "正在加载分析结果")
+        try:
+            result = await asyncio.to_thread(
+                get_json,
+                api_base.value.strip(),
+                f"/jobs/{state['job_id']}/result",
+            )
+        except requests.RequestException as exc:
+            show_message(
+                f"任务已完成，但结果暂时加载失败：{exc}"
+                "；请点击“刷新任务状态”后重试。"
+            )
+            return
+
+        state["result"] = result
+        render_result(result)
+        status_text.value = "100%  分析完成"
+        audio_text.value = "会议分析已完成"
+        show_message("会议分析完成")
+
+    async def handle_final_job(job: dict | None):
+        if not job:
+            show_message(
+                "本次没有拿到最新任务状态，后台任务可能仍在执行。"
+                "请点击“刷新任务状态”或“继续等待分析”。"
+            )
+            return
+
+        apply_job_update(job)
+        status_value = job.get("status")
+
+        if status_value == "completed":
+            await load_job_result(job)
+        elif status_value == "failed":
+            show_message(
+                "会议分析失败：" + str(job.get("error") or "未知错误")
+            )
+        elif status_value == "cancelled":
+            show_message("会议分析已取消")
+        else:
+            show_message(
+                "任务仍在后台处理中，请点击“继续等待分析”查看后续进度。"
+            )
 
     def render_result(result: dict):
         summary_list.controls.clear()
@@ -324,42 +555,163 @@ def main(page: ft.Page):
         finally:
             set_busy(False)
 
-    def run_analysis(_):
-        show_message("正在分析会议...")
-        if not state["meeting_id"]:
-            show_message("请先创建会议")
+    async def run_analysis_async():
+        if state["polling"]:
+            show_message("任务正在轮询，请勿重复启动分析")
+            return
+
+        audio_bytes = state["audio_bytes"]
+
+        if not audio_bytes and state["audio_path"]:
+            audio_bytes = await asyncio.to_thread(
+                Path(state["audio_path"]).read_bytes
+            )
+
+        if not audio_bytes:
+            show_message("请先选择音频文件")
+            return
+
+        api_url = api_base.value.strip()
+        if not api_url:
+            show_message("请填写后端地址")
             return
 
         try:
-            set_busy(True, "正在分析会议")
-            result = post_json(
-                api_base.value.strip(),
-                f"/meetings/{state['meeting_id']}/run-asr",
+            set_busy(True, "正在创建分析任务")
+            show_message("正在上传音频并创建后台任务...")
+
+            job = await asyncio.to_thread(
+                post_analyze,
+                api_url,
+                title.value.strip() or "未命名会议",
+                host.value.strip() or "-",
+                participants.value.strip(),
+                state["audio_name"] or "meeting_audio.wav",
+                audio_bytes,
             )
-            state["result"] = result
-            refresh_status(result)
-            render_result(result)
-            show_message("会议分析完成")
+
+            state["job_id"] = job["job_id"]
+            state["meeting_id"] = job["meeting_id"]
+            state["job_status"] = job
+            state["history"] = job.get("history", [])
+            state["result"] = None
+
+            meeting_id_text.value = state["meeting_id"]
+            render_history(state["history"])
+            show_message(
+                f"任务已创建：{state['job_id']}"
+            )
+
+            state["polling"] = True
+            final_job = await poll_job_async(
+                api_url,
+                state["job_id"],
+                on_job_update,
+                on_job_error,
+            )
+
+            await handle_final_job(final_job)
+
         except Exception as exc:
             show_message(f"分析失败：{exc}")
         finally:
+            state["polling"] = False
             set_busy(False)
+
+    def run_analysis(_):
+        page.run_task(run_analysis_async)
+
+    async def refresh_job_status_async():
+        if not state["job_id"]:
+            show_message("当前没有可刷新的分析任务")
+            return
+
+        if state["polling"]:
+            show_message("任务正在自动轮询，请稍候")
+            return
+
+        try:
+            set_busy(True, "正在刷新任务状态")
+            current = await asyncio.to_thread(
+                get_json,
+                api_base.value.strip(),
+                f"/jobs/{state['job_id']}",
+            )
+            apply_job_update(current)
+            await handle_final_job(current)
+        except requests.RequestException as exc:
+            show_message(
+                f"刷新失败：{exc}。任务可能仍在后台执行，请稍后再次刷新。"
+            )
+        except Exception as exc:
+            show_message(f"刷新任务状态失败：{exc}")
+        finally:
+            set_busy(False)
+
+    def refresh_job_status(_):
+        page.run_task(refresh_job_status_async)
+
+    async def resume_job_polling_async():
+        if not state["job_id"]:
+            show_message("当前没有可继续等待的分析任务")
+            return
+
+        if state["polling"]:
+            show_message("任务正在轮询，请勿重复点击")
+            return
+
+        try:
+            state["polling"] = True
+            set_busy(True, "正在继续等待分析")
+            show_message("已恢复任务轮询，不会重新上传音频")
+
+            final_job = await poll_job_async(
+                api_base.value.strip(),
+                state["job_id"],
+                on_job_update,
+                on_job_error,
+            )
+            await handle_final_job(final_job)
+        except Exception as exc:
+            show_message(
+                f"继续等待时发生临时错误：{exc}。"
+                "任务仍可通过“刷新任务状态”继续查看。"
+            )
+        finally:
+            state["polling"] = False
+            set_busy(False)
+
+    def resume_job_polling(_):
+        page.run_task(resume_job_polling_async)
 
     def download_pdf(_):
         show_message("正在生成 PDF...")
-        if not state["meeting_id"]:
-            show_message("请先创建会议")
+        if not state["meeting_id"] and not state["job_id"]:
+            show_message("请先完成会议分析")
             return
 
         try:
             set_busy(True, "正在生成 PDF")
+            if state["job_id"]:
+                pdf_api_path = (
+                    f"/jobs/{state['job_id']}/report/pdf"
+                )
+            else:
+                pdf_api_path = (
+                    f"/meetings/{state['meeting_id']}"
+                    "/report/pdf"
+                )
+
             data = get_bytes(
                 api_base.value.strip(),
-                f"/meetings/{state['meeting_id']}/report/pdf",
+                pdf_api_path,
             )
             output_dir = Path("outputs/reports")
             output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = output_dir / f"{state['meeting_id']}_trusted_minutes.pdf"
+            output_path = (
+                output_dir
+                / f"{state['meeting_id']}_trusted_minutes.pdf"
+            )
             output_path.write_bytes(data)
             show_message(f"PDF 已保存：{output_path}")
         except Exception as exc:
@@ -367,6 +719,26 @@ def main(page: ft.Page):
         finally:
             set_busy(False)
 
+    def open_pdf_report(_):
+        if not state["meeting_id"] and not state["job_id"]:
+            show_message("请先完成会议分析")
+            return
+
+        if state["job_id"]:
+            pdf_api_path = (
+                f"/jobs/{state['job_id']}/report/pdf"
+            )
+        else:
+            pdf_api_path = (
+                f"/meetings/{state['meeting_id']}"
+                "/report/pdf"
+            )
+
+        pdf_url = (
+            f"{api_base.value.strip()}{pdf_api_path}"
+        )
+        page.launch_url(pdf_url)
+        show_message("已打开 PDF 报告")
     def search_evidence(_):
         search_results.controls.clear()
 
@@ -507,8 +879,11 @@ def main(page: ft.Page):
         ft.Column(
             [
                 section_title("3. 生成结果"),
-                ft.ElevatedButton("运行会议分析", on_click=run_analysis, width=360),
+                ft.ElevatedButton("一键分析会议", on_click=run_analysis, width=360),
+                ft.OutlinedButton("刷新任务状态", on_click=refresh_job_status, width=360),
+                ft.OutlinedButton("继续等待分析", on_click=resume_job_polling, width=360),
                 ft.OutlinedButton("生成 PDF 报告", on_click=download_pdf, width=360),
+                ft.OutlinedButton("打开 PDF 报告", on_click=open_pdf_report, width=360),
             ],
             spacing=10,
         )
@@ -540,6 +915,8 @@ def main(page: ft.Page):
                     audio_card,
                     action_card,
                     search_card,
+                    section_title("任务历史"),
+                    history_list,
                     section_title("发言人贡献"),
                     summary_list,
                     section_title("可追溯结论"),

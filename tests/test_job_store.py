@@ -109,6 +109,56 @@ def test_job_history_deduplicates_same_stage(
     assert len(saved_job["history"]) == 2
 
 
+def test_job_progress_never_moves_backward(
+    monkeypatch,
+):
+    memory = {}
+
+    def fake_save_job(job):
+        memory[job["job_id"]] = deepcopy(job)
+
+    def fake_get_job(job_id):
+        job = memory.get(job_id)
+        return deepcopy(job) if job else None
+
+    monkeypatch.setattr(
+        job_store,
+        "save_job",
+        fake_save_job,
+    )
+    monkeypatch.setattr(
+        job_store,
+        "get_job",
+        fake_get_job,
+    )
+
+    job = job_store.create_job(
+        "meeting_monotonic_progress_test"
+    )
+
+    job_store.update_job(
+        job["job_id"],
+        status="agent_processing",
+        progress=98,
+        stage="ASR 与证据阶段完成",
+    )
+    job_store.update_job(
+        job["job_id"],
+        status="agent_processing",
+        progress=65,
+        stage="多 Agent 抽取会议内容",
+    )
+
+    saved_job = memory[job["job_id"]]
+
+    assert saved_job["progress"] == 98
+    assert saved_job["history"][-1]["progress"] == 98
+    assert (
+        saved_job["history"][-1]["stage"]
+        == "多 Agent 抽取会议内容"
+    )
+
+
 def test_legacy_job_can_create_history(
     monkeypatch,
 ):

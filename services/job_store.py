@@ -143,13 +143,17 @@ def update_job(
         "stage": job.get("stage"),
     }
 
+    previous_progress = int(
+        job.get("progress", 0)
+    )
+
     if status is not None:
         job["status"] = status
 
     if progress is not None:
         job["progress"] = max(
-            0,
-            min(100, int(progress)),
+            previous_progress,
+            min(100, max(0, int(progress))),
         )
 
     if stage is not None:

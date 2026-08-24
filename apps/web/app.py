@@ -375,6 +375,20 @@ def run_async_analysis_web(
     return None
 
 
+def ordered_job_history(history: list[dict]) -> list[dict]:
+    """Keep old malformed timelines readable while preserving stable order."""
+    return [
+        item
+        for _, item in sorted(
+            enumerate(history),
+            key=lambda pair: (
+                int(pair[1].get("progress", 0)),
+                pair[0],
+            ),
+        )
+    ]
+
+
 def render_job_history():
     job_status = (
         st.session_state.job_status
@@ -407,6 +421,9 @@ def render_job_history():
         )
 
     if history:
+        display_history = ordered_job_history(
+            history
+        )
         st.markdown(
             '<div class="section-title">'
             "完整处理轨迹"
@@ -432,33 +449,103 @@ def render_job_history():
                         "",
                     ),
                 }
-                for item in history
+                for item in display_history
             ],
             use_container_width=True,
             hide_index=True,
         )
 
 
-def render_meeting_status(meeting: dict | None):
-    if not meeting:
+def sync_completed_job_result() -> None:
+    """Load the final Agent result whenever a completed Job is visible."""
+    job_status = (
+        st.session_state.job_status
+        or {}
+    )
+
+    if (
+        job_status.get("status") != "completed"
+        or st.session_state.analysis_result
+    ):
+        return
+
+    job_id = st.session_state.job_id
+    if not job_id:
+        return
+
+    try:
+        result = get_job_result(job_id)
+        st.session_state.analysis_result = result
+
+        meeting = st.session_state.meeting or {}
+        meeting.update(
+            {
+                "status": "completed",
+                "progress": 100,
+                "audio_info": result.get(
+                    "audio_info",
+                    {},
+                ),
+                "speakers": result.get(
+                    "speaker_ids",
+                    [],
+                ),
+            }
+        )
+        st.session_state.meeting = meeting
+    except Exception as exc:
+        st.session_state.error = (
+            f"任务已完成，但加载分析结果失败：{exc}"
+        )
+
+
+def render_meeting_status(
+    meeting: dict | None,
+    job_status: dict | None = None,
+):
+    job_status = job_status or {}
+    if not meeting and not job_status:
         st.info("请先创建会议。")
         return
+
+    meeting = meeting or {}
+    current_status = {
+        **meeting,
+        "status": job_status.get(
+            "status",
+            meeting.get("status", "-"),
+        ),
+        "progress": job_status.get(
+            "progress",
+            meeting.get("progress", 0),
+        ),
+    }
 
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("会议状态", meeting.get("status", "-"))
+        st.metric(
+            "会议状态",
+            current_status.get("status", "-"),
+        )
 
     with col2:
-        st.metric("处理进度", f"{meeting.get('progress', 0)}%")
+        st.metric(
+            "处理进度",
+            f"{current_status.get('progress', 0)}%",
+        )
 
     with col3:
-        audio_info = meeting.get("audio_info") or {}
+        audio_info = current_status.get(
+            "audio_info"
+        ) or {}
         duration = audio_info.get("duration_seconds")
         st.metric("音频时长", f"{duration:.2f} 秒" if duration else "-")
 
     with col4:
-        speakers = meeting.get("speakers") or []
+        speakers = current_status.get(
+            "speakers"
+        ) or []
         st.metric("发言人数", len(speakers))
 
 
@@ -673,6 +760,12 @@ with left:
                 st.session_state.job_history = (
                     current.get("history", [])
                 )
+                if current.get("status") == "completed":
+                    st.session_state.analysis_result = (
+                        get_job_result(
+                            st.session_state.job_id
+                        )
+                    )
                 st.rerun()
             except Exception as exc:
                 st.error(
@@ -705,9 +798,13 @@ with left:
                 )
 
 with right:
+    sync_completed_job_result()
     st.markdown("### 会议状态")
     render_job_history()
-    render_meeting_status(st.session_state.meeting)
+    render_meeting_status(
+        st.session_state.meeting,
+        st.session_state.job_status,
+    )
     render_search_results()
 
     result = st.session_state.analysis_result
