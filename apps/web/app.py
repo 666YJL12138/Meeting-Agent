@@ -1,4 +1,5 @@
 import requests
+import time
 import streamlit as st
 from urllib.parse import quote
 
@@ -67,6 +68,70 @@ def api_post(path: str, json_body: dict | None = None, files: dict | None = None
     return response.json()
 
 
+def start_async_analysis(
+    uploaded_file,
+    title: str,
+    host: str,
+    language: str,
+    participants: list[str],
+):
+    files = {
+        "file": (
+            uploaded_file.name,
+            uploaded_file.getvalue(),
+            uploaded_file.type
+            or "application/octet-stream",
+        )
+    }
+
+    data = {
+        "title": title,
+        "host": host,
+        "language": language,
+        "participants": "\n".join(
+            participants
+        ),
+        "send_email": "false",
+    }
+
+    response = requests.post(
+        f"{API_BASE}/meetings/analyze",
+        data=data,
+        files=files,
+        timeout=120,
+    )
+
+    response.raise_for_status()
+    return response.json()
+
+
+def get_job_status(job_id: str) -> dict:
+    response = requests.get(
+        f"{API_BASE}/jobs/{job_id}",
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def get_job_result(job_id: str) -> dict:
+    response = requests.get(
+        f"{API_BASE}/jobs/{job_id}/result",
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def get_job_pdf(job_id: str) -> bytes:
+    response = requests.get(
+        f"{API_BASE}/jobs/{job_id}/report/pdf",
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.content
+
+
 def api_get(path: str):
     url = f"{API_BASE}{path}"
     response = requests.get(url, timeout=60)
@@ -78,6 +143,9 @@ def init_session_state():
     defaults = {
         "meeting": None,
         "meeting_id": "",
+        "job_id": "",
+        "job_status": None,
+        "job_history": [],
         "analysis_result": None,
         "search_results": None,
         "error": None,
@@ -149,6 +217,226 @@ def review_claim(
     )
     response.raise_for_status()
     return response.json()
+
+
+def run_async_analysis_web(
+    uploaded_file,
+    title: str,
+    host: str,
+    language: str,
+    participants: list[str],
+):
+    job = start_async_analysis(
+        uploaded_file=uploaded_file,
+        title=title,
+        host=host,
+        language=language,
+        participants=participants,
+    )
+
+    job_id = job["job_id"]
+    meeting_id = job["meeting_id"]
+
+    st.session_state.job_id = job_id
+    st.session_state.meeting_id = meeting_id
+    st.session_state.job_status = job
+    st.session_state.job_history = job.get(
+        "history",
+        [],
+    )
+    st.session_state.analysis_result = None
+    st.session_state.meeting = {
+        "meeting_id": meeting_id,
+        "title": title,
+        "host": host,
+        "language": language,
+        "status": job.get(
+            "status",
+            "queued",
+        ),
+        "progress": job.get(
+            "progress",
+            10,
+        ),
+        "audio_info": {},
+        "speakers": [],
+    }
+
+    st.success(
+        f"任务已创建：{job_id}"
+    )
+
+    progress_bar = st.progress(
+        int(job.get("progress", 0))
+    )
+    status_placeholder = st.empty()
+    history_placeholder = st.empty()
+
+    while True:
+        current = get_job_status(job_id)
+
+        progress_value = int(
+            current.get("progress", 0)
+        )
+        status_value = current.get(
+            "status",
+            "-",
+        )
+        stage_value = current.get(
+            "stage",
+            "-",
+        )
+
+        progress_bar.progress(
+            progress_value
+        )
+        status_placeholder.info(
+            f"状态：{status_value}，"
+            f"进度：{progress_value}%\n\n"
+            f"当前阶段：{stage_value}"
+        )
+
+        history = current.get(
+            "history",
+            [],
+        )
+        st.session_state.job_status = current
+        st.session_state.job_history = history
+        st.session_state.meeting.update(
+            {
+                "status": status_value,
+                "progress": progress_value,
+            }
+        )
+
+        if history:
+            history_placeholder.dataframe(
+                [
+                    {
+                        "时间": item.get(
+                            "timestamp",
+                            "",
+                        ),
+                        "状态": item.get(
+                            "status",
+                            "",
+                        ),
+                        "进度": (
+                            f"{item.get('progress', 0)}%"
+                        ),
+                        "阶段": item.get(
+                            "stage",
+                            "",
+                        ),
+                    }
+                    for item in history
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        if status_value in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            break
+
+        time.sleep(2)
+
+    if status_value == "completed":
+        result = get_job_result(job_id)
+        st.session_state.analysis_result = result
+        st.session_state.meeting.update(
+            {
+                "status": "completed",
+                "progress": 100,
+                "audio_info": result.get(
+                    "audio_info",
+                    {},
+                ),
+                "speakers": result.get(
+                    "speaker_ids",
+                    [],
+                ),
+            }
+        )
+        st.success("会议分析完成。")
+        return result
+
+    if status_value == "failed":
+        st.error(
+            "会议分析失败："
+            + str(current.get("error"))
+        )
+        return None
+
+    st.warning("任务已取消。")
+    return None
+
+
+def render_job_history():
+    job_status = (
+        st.session_state.job_status
+        or {}
+    )
+    history = st.session_state.job_history
+
+    if not job_status and not history:
+        st.info("提交任务后，这里会显示处理进度。")
+        return
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "任务进度",
+            f"{job_status.get('progress', 0)}%",
+        )
+
+    with col2:
+        st.metric(
+            "任务状态",
+            job_status.get("status", "-"),
+        )
+
+    with col3:
+        st.metric(
+            "处理阶段",
+            job_status.get("stage", "-"),
+        )
+
+    if history:
+        st.markdown(
+            '<div class="section-title">'
+            "完整处理轨迹"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.dataframe(
+            [
+                {
+                    "时间": item.get(
+                        "timestamp",
+                        "",
+                    ),
+                    "状态": item.get(
+                        "status",
+                        "",
+                    ),
+                    "进度": (
+                        f"{item.get('progress', 0)}%"
+                    ),
+                    "阶段": item.get(
+                        "stage",
+                        "",
+                    ),
+                }
+                for item in history
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def render_meeting_status(meeting: dict | None):
@@ -300,134 +588,125 @@ st.markdown(
 left, right = st.columns([0.34, 0.66])
 
 with left:
-    st.markdown("### 创建会议")
+    st.markdown("### 一键生成可信会议纪要")
 
-    title = st.text_input("会议标题", value="Meeting Agent Test")
-    host = st.text_input("主持人", value="Zhang San")
-    language = st.selectbox("会议语言", ["zh-CN", "en-US"], index=0)
-    participants_text = st.text_area("参会人，每行一个", value="Zhang San\nLi Si")
+    title = st.text_input(
+        "会议标题",
+        value="真实会议测试",
+    )
 
-    if st.button("创建会议", use_container_width=True):
-        try:
+    host = st.text_input(
+        "主持人",
+        value="主持人",
+    )
+
+    language = st.selectbox(
+        "会议语言",
+        ["zh-CN", "en-US"],
+        index=0,
+    )
+
+    participants_text = st.text_area(
+        "参会人，每行一个",
+        value="张三\n李四\n王五",
+    )
+
+    uploaded_file = st.file_uploader(
+        "选择会议音频",
+        type=[
+            "wav",
+            "mp3",
+            "m4a",
+            "aac",
+            "flac",
+        ],
+    )
+
+    start_button = st.button(
+        "开始一键分析",
+        use_container_width=True,
+        type="primary",
+    )
+
+    if start_button:
+        if uploaded_file is None:
+            st.warning("请先选择会议音频。")
+        else:
             participants = [
                 item.strip()
                 for item in participants_text.splitlines()
                 if item.strip()
             ]
-            create_meeting(title, host, language, participants)
-            st.success("会议创建成功。")
-        except Exception as exc:
-            st.error(f"创建会议失败：{exc}")
+
+            try:
+                run_async_analysis_web(
+                    uploaded_file=uploaded_file,
+                    title=title,
+                    host=host,
+                    language=language,
+                    participants=participants,
+                )
+            except Exception as exc:
+                st.error(
+                    f"启动会议分析失败：{exc}"
+                )
 
     st.divider()
 
-    st.markdown("### 上传音频")
+    if st.session_state.job_id:
+        st.markdown("### 当前任务")
 
-    meeting_id = st.text_input(
-        "会议ID",
-        value=st.session_state.meeting_id,
-        placeholder="创建会议后会自动填入",
-    )
+        st.code(
+            st.session_state.job_id,
+            language="text",
+        )
 
-    uploaded_file = st.file_uploader(
-        "选择会议音频",
-        type=["wav", "mp3", "m4a", "aac", "flac"],
-    )
-
-    if st.button("上传音频", use_container_width=True):
-        if not meeting_id:
-            st.warning("请先创建会议或填写会议ID。")
-        elif uploaded_file is None:
-            st.warning("请选择音频文件。")
-        else:
+        if st.button(
+            "刷新任务状态",
+            use_container_width=True,
+        ):
             try:
-                upload_audio(meeting_id, uploaded_file)
-                st.success("音频上传成功。")
+                current = get_job_status(
+                    st.session_state.job_id
+                )
+                st.session_state.job_status = current
+                st.session_state.job_history = (
+                    current.get("history", [])
+                )
+                st.rerun()
             except Exception as exc:
-                st.error(f"上传音频失败：{exc}")
+                st.error(
+                    f"刷新任务失败：{exc}"
+                )
 
-    if st.button("运行会议分析", use_container_width=True):
-        if not meeting_id:
-            st.warning("请先创建会议或填写会议ID。")
-        else:
+        final_status = (
+            st.session_state.job_status or {}
+        ).get("status")
+
+        if final_status == "completed":
             try:
-                with st.spinner("正在进行 ASR、说话人归因、贡献抽取，请稍候..."):
-                    run_analysis(meeting_id)
-                st.success("会议分析完成。")
-            except Exception as exc:
-                st.error(f"运行分析失败：{exc}")
+                pdf_data = get_job_pdf(
+                    st.session_state.job_id
+                )
 
-    st.divider()
-
-    if st.button("生成并下载 PDF", use_container_width=True):
-        if not meeting_id:
-            st.warning("请先创建会议或填写会议ID。")
-        else:
-            try:
-                pdf_bytes = download_pdf(meeting_id)
                 st.download_button(
-                    label="下载可信会议纪要 PDF",
-                    data=pdf_bytes,
-                    file_name=f"{meeting_id}_trusted_minutes.pdf",
+                    "下载可信会议纪要 PDF",
+                    data=pdf_data,
+                    file_name=(
+                        f"{st.session_state.meeting_id}"
+                        "_trusted_minutes.pdf"
+                    ),
                     mime="application/pdf",
                     use_container_width=True,
                 )
             except Exception as exc:
-                st.error(f"生成 PDF 失败：{exc}")
-
-    st.divider()
-    st.markdown("### 证据检索")
-    search_query = st.text_input(
-        "检索关键词",
-        placeholder="例如：预算、风险、负责人、排期",
-    )
-
-    if st.button("搜索原话证据", use_container_width=True):
-        if not meeting_id:
-            st.warning("请先创建并分析会议")
-        elif not search_query.strip():
-            st.warning("请输入检索关键词")
-        else:
-            try:
-                st.session_state.search_results = search_evidence(
-                    meeting_id,
-                    search_query,
+                st.error(
+                    f"PDF下载失败：{exc}"
                 )
-            except Exception as exc:
-                st.error(f"证据检索失败：{exc}")
-
-    current_result = st.session_state.analysis_result or {}
-    review_claims = current_result.get("claims", [])
-
-    if review_claims:
-        st.divider()
-        st.markdown("### 人工审校")
-        claim_ids = [item["claim_id"] for item in review_claims]
-        selected_claim_id = st.selectbox("选择结论", claim_ids)
-        review_status = st.selectbox(
-            "审校状态",
-            ["reviewed", "confirmed", "rejected", "needs_review"],
-        )
-        review_note = st.text_area("审校备注")
-
-        if st.button("提交审校结果", use_container_width=True):
-            try:
-                updated = review_claim(
-                    meeting_id,
-                    selected_claim_id,
-                    review_status,
-                    review_note,
-                )
-                for item in review_claims:
-                    if item.get("claim_id") == selected_claim_id:
-                        item.update(updated)
-                        break
-                st.success("审校结果已保存")
-            except Exception as exc:
-                st.error(f"提交审校失败：{exc}")
 
 with right:
     st.markdown("### 会议状态")
+    render_job_history()
     render_meeting_status(st.session_state.meeting)
     render_search_results()
 

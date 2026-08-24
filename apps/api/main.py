@@ -640,5 +640,91 @@ def get_job_history(job_id: str):
     }
 
 
+def load_agent_result_by_job(job: dict) -> dict:
+    meeting_id = job["meeting_id"]
+
+    result_info = job.get("result") or {}
+    result_path = result_info.get("agent_result_path")
+
+    if result_path:
+        path = Path(result_path)
+    else:
+        path = (
+            Path("outputs/agent")
+            / f"{meeting_id}.json"
+        )
+
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="agent result not found",
+        )
+
+    return json.loads(
+        path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+@app.get("/jobs/{job_id}/result")
+def get_job_result(job_id: str):
+    job = get_job(job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found",
+        )
+
+    if job.get("status") != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="job is not completed",
+        )
+
+    return load_agent_result_by_job(job)
+
+
+@app.get("/jobs/{job_id}/report/pdf")
+def download_job_report(job_id: str):
+    job = get_job(job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found",
+        )
+
+    if job.get("status") != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="job is not completed",
+        )
+
+    result_info = job.get("result") or {}
+    pdf_path_value = result_info.get("pdf_path")
+
+    if pdf_path_value:
+        pdf_path = Path(pdf_path_value)
+    else:
+        pdf_path = (
+            Path("outputs/reports")
+            / f"{job['meeting_id']}_trusted_minutes.pdf"
+        )
+
+    if not pdf_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="PDF report not found",
+        )
+
+    return FileResponse(
+        path=str(pdf_path),
+        media_type="application/pdf",
+        filename=(
+            f"{job['meeting_id']}_trusted_minutes.pdf"
+        ),
+    )
 
 
