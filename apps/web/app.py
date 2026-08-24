@@ -4,6 +4,13 @@ import time
 import streamlit as st
 from urllib.parse import quote
 
+from services.meeting_defaults import (
+    DEFAULT_MEETING_HOST,
+    DEFAULT_MEETING_LANGUAGE,
+    DEFAULT_MEETING_PARTICIPANTS,
+    DEFAULT_MEETING_TITLE,
+)
+
 
 API_BASE = "http://127.0.0.1:8000"
 
@@ -24,6 +31,18 @@ def is_action_claim(claim: dict) -> bool:
 def is_risk_claim(claim: dict) -> bool:
     value = claim_type_text(claim).lower()
     return "risk" in value or "风险" in value
+
+
+def speaker_display_name(item: dict, result: dict | None = None) -> str:
+    result = result or {}
+    speaker_id = item.get("speaker_id") or "未识别说话人"
+    mapping = result.get("speaker_mapping") or result.get("speaker_name_map") or {}
+    return (
+        item.get("speaker_name")
+        or item.get("display_name")
+        or mapping.get(speaker_id)
+        or speaker_id
+    )
 
 
 st.set_page_config(
@@ -575,7 +594,7 @@ def render_speaker_summaries(result: dict):
         return
 
     for summary in summaries:
-        speaker_name = summary.get("display_name") or summary.get("speaker_id")
+        speaker_name = speaker_display_name(summary, result)
         st.subheader(f"发言人：{speaker_name}")
 
         key_points = summary.get("key_points") or []
@@ -619,7 +638,7 @@ def render_claims(result: dict):
             <div class="claim-box">
                 <b>{html_text(claim_type_text(claim))}</b>
                 &nbsp;|&nbsp;
-                发言人：{html_text(claim.get("speaker_id", "-"))}
+                发言人：{html_text(speaker_display_name(claim, result))}
                 &nbsp;|&nbsp;
                 时间：{html_text(start_ms)}ms - {html_text(end_ms)}ms
                 <br/>
@@ -658,7 +677,7 @@ def render_action_items(result: dict):
             f"""
             <div class="claim-box action-box">
                 <b>行动项 {index}</b>
-                &nbsp;|&nbsp; 负责人：{html_text(claim.get("speaker_id", "-"))}
+                &nbsp;|&nbsp; 负责人：{html_text(speaker_display_name(claim, result))}
                 &nbsp;|&nbsp; 支撑度：{html_text(claim.get("confidence", "-"))}
                 <br/><b>内容：</b>{html_text(
                     claim.get("statement") or claim.get("summary", "")
@@ -690,7 +709,7 @@ def render_risks(result: dict):
             f"""
             <div class="claim-box risk-box">
                 <b>风险 {index}</b>
-                &nbsp;|&nbsp; 来源：{html_text(claim.get("speaker_id", "-"))}
+                &nbsp;|&nbsp; 来源：{html_text(speaker_display_name(claim, result))}
                 &nbsp;|&nbsp; 支撑度：{html_text(claim.get("confidence", "-"))}
                 <br/><b>描述：</b>{html_text(
                     claim.get("statement") or claim.get("summary", "")
@@ -716,7 +735,7 @@ def render_evidence_chain(result: dict):
         [
             {
                 "证据ID": item.get("evidence_id", "-"),
-                "发言人": item.get("speaker_id", "-"),
+                "发言人": speaker_display_name(item, result),
                 "时间": (
                     f"{item.get('start_ms', 0)}ms - "
                     f"{item.get('end_ms', 0)}ms"
@@ -771,7 +790,7 @@ def render_transcript(result: dict):
     for span in spans:
         st.write(
             f"[{span.get('start_ms', 0)}-{span.get('end_ms', 0)}] "
-            f"{span.get('speaker_id', '-')}: {span.get('text', '')}"
+            f"{speaker_display_name(span, result)}: {span.get('text', '')}"
         )
 
 
@@ -819,23 +838,23 @@ with left:
 
     title = st.text_input(
         "会议标题",
-        value="真实会议测试",
+        value=DEFAULT_MEETING_TITLE,
     )
 
     host = st.text_input(
         "主持人",
-        value="主持人",
+        value=DEFAULT_MEETING_HOST,
     )
 
     language = st.selectbox(
         "会议语言",
         ["zh-CN", "en-US"],
-        index=0,
+        index=0 if DEFAULT_MEETING_LANGUAGE == "zh-CN" else 1,
     )
 
     participants_text = st.text_area(
         "参会人，每行一个",
-        value="张三\n李四\n王五",
+        value=DEFAULT_MEETING_PARTICIPANTS,
     )
 
     uploaded_file = st.file_uploader(

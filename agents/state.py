@@ -16,6 +16,7 @@ class MeetingState(TypedDict, total=False):
     speakers: List[Dict[str, Any]]
     speaker_segments: List[Dict[str, Any]]
     speaker_mapping: Dict[str, str]
+    speaker_name_map: Dict[str, str]
 
     claims: List[Dict[str, Any]]
     speaker_summaries: List[Dict[str, Any]]

@@ -94,6 +94,10 @@ def build_evidence(
                 "speaker_id",
                 "speaker_unknown",
             ),
+            "speaker_name": span.get(
+                "speaker_name",
+                span.get("display_name"),
+            ),
             "text": text,
             "start_ms": int(
                 span.get("start_ms", 0)
@@ -186,11 +190,19 @@ def run_full_workflow(
                 "audio_info",
                 {},
             ),
+            "participants": meeting.get(
+                "participants",
+                [],
+            ),
             "evidence": evidence,
             "speaker_ids": sorted({
                 item["speaker_id"]
                 for item in evidence
             }),
+            "speaker_mapping": asr_state.get(
+                "speaker_mapping",
+                {},
+            ),
             "contributions": [],
             "action_items": [],
             "risks": [],

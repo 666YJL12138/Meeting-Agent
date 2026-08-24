@@ -20,10 +20,12 @@ JobStatus = Literal[
 
 
 class MeetingCreate(BaseModel):
-    title: str
-    host: str
+    title: str = "真实会议测试"
+    host: str = "主持人"
     language: str = "zh-CN"
-    participants: List[str] = []
+    participants: List[str] = Field(
+        default_factory=lambda: ["张三", "李四", "王五"]
+    )
 
 class MeetingOut(BaseModel):
     meeting_id: str
@@ -40,6 +42,7 @@ class MeetingOut(BaseModel):
     speakers: list[dict[str, Any]] = []
     speaker_segments: list[dict[str, Any]] = []
     speaker_mapping: dict[str, str] = {}
+    speaker_name_map: dict[str, str] = {}
     transcript_spans: list[dict[str, Any]] = []
     evidence_links: list[dict[str, Any]] = []  
     claims: list[dict[str, Any]] = Field(default_factory=list)

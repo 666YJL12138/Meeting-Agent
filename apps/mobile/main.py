@@ -5,6 +5,13 @@ import asyncio
 import flet as ft
 import requests
 
+from services.meeting_defaults import (
+    DEFAULT_MEETING_HOST,
+    DEFAULT_MEETING_LANGUAGE,
+    DEFAULT_MEETING_PARTICIPANTS,
+    DEFAULT_MEETING_TITLE,
+)
+
 
 DEFAULT_API_BASE = "http://10.193.23.250:8000"
 DEFAULT_AUDIO_PATH = r"D:\futurework\Meeting-Agent\Meeting-Agent\day2_chinese_meeting_sample.wav"
@@ -51,6 +58,18 @@ def is_action_claim(claim: dict) -> bool:
 def is_risk_claim(claim: dict) -> bool:
     value = str(claim.get("claim_type") or "").lower()
     return "risk" in value or "风险" in value
+
+
+def speaker_display_name(item: dict, result: dict | None = None) -> str:
+    result = result or {}
+    speaker_id = item.get("speaker_id") or "未识别说话人"
+    mapping = result.get("speaker_mapping") or result.get("speaker_name_map") or {}
+    return (
+        item.get("speaker_name")
+        or item.get("display_name")
+        or mapping.get(speaker_id)
+        or speaker_id
+    )
 
 
 def post_analyze(
@@ -183,11 +202,11 @@ def main(page: ft.Page):
     }
 
     api_base = ft.TextField(label="后端地址", value=DEFAULT_API_BASE)
-    title = ft.TextField(label="会议标题", value="Meeting Agent Test")
-    host = ft.TextField(label="主持人", value="Zhang San")
+    title = ft.TextField(label="会议标题", value=DEFAULT_MEETING_TITLE)
+    host = ft.TextField(label="主持人", value=DEFAULT_MEETING_HOST)
     participants = ft.TextField(
         label="参会人",
-        value="Zhang San\nLi Si",
+        value=DEFAULT_MEETING_PARTICIPANTS,
         multiline=True,
         min_lines=2,
         max_lines=4,
@@ -502,7 +521,8 @@ def main(page: ft.Page):
                     ft.Column(
                         [
                             ft.Text(
-                                f"{label_claim_type(claim.get('claim_type'))} | {claim.get('speaker_id', '-')}",
+                                f"{label_claim_type(claim.get('claim_type'))} | "
+                                f"{speaker_display_name(claim, result)}",
                                 size=15,
                                 weight=ft.FontWeight.BOLD,
                                 color="#101828",
@@ -534,7 +554,7 @@ def main(page: ft.Page):
                     ft.Column(
                         [
                             ft.Text(
-                                f"行动项 {index} · {claim.get('speaker_id', '-')}",
+                                f"行动项 {index} · {speaker_display_name(claim, result)}",
                                 size=15,
                                 weight=ft.FontWeight.BOLD,
                                 color="#067647",
@@ -564,7 +584,7 @@ def main(page: ft.Page):
                     ft.Column(
                         [
                             ft.Text(
-                                f"风险 {index} · {claim.get('speaker_id', '-')}",
+                                f"风险 {index} · {speaker_display_name(claim, result)}",
                                 size=15,
                                 weight=ft.FontWeight.BOLD,
                                 color="#B42318",
@@ -601,7 +621,7 @@ def main(page: ft.Page):
                                 color="#175CD3",
                             ),
                             ft.Text(
-                                f"{item.get('speaker_id', '-')} · "
+                                f"{speaker_display_name(item, result)} · "
                                 f"{format_ms(item.get('start_ms'))}-"
                                 f"{format_ms(item.get('end_ms'))}",
                                 size=11,
@@ -635,7 +655,7 @@ def main(page: ft.Page):
                 card(
                     ft.Text(
                         f"[{format_ms(span.get('start_ms'))}-{format_ms(span.get('end_ms'))}] "
-                        f"{span.get('speaker_id', '-')}: {span.get('text', '')}",
+                        f"{speaker_display_name(span, result)}: {span.get('text', '')}",
                         size=12,
                         color="#344054",
                     ),
@@ -708,7 +728,7 @@ def main(page: ft.Page):
             payload = {
                 "title": title.value,
                 "host": host.value,
-                "language": "zh-CN",
+                "language": DEFAULT_MEETING_LANGUAGE,
                 "participants": [
                     item.strip()
                     for item in participants.value.splitlines()

@@ -10,6 +10,8 @@ class MeetingAgentState(TypedDict, total=False):
 
     evidence: list[dict]
     speaker_ids: list[str]
+    participants: list[str]
+    speaker_mapping: dict[str, str]
 
     contributions: list[dict]
     action_items: list[dict]

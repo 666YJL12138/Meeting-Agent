@@ -17,6 +17,10 @@ from services.diarization import (
     build_speakers,
     diarize_audio,
 )
+from services.speaker_identity import (
+    apply_speaker_name_map,
+    infer_speaker_name_map,
+)
 from services.vector_store import index_meeting
 
 
@@ -93,6 +97,7 @@ def asr_node(state: MeetingState) -> MeetingState:
         spans = transcribe_audio(
             wav_path=state["normalized_audio_uri"],
             meeting_id=state["meeting_id"],
+            participants=state.get("participants", []),
         )
 
     update_job_progress(
@@ -140,11 +145,29 @@ def diarization_node(state: MeetingState) -> MeetingState:
         )
 
     speakers = build_speakers(speaker_segments)
+    speaker_mapping = infer_speaker_name_map(
+        assigned_spans,
+        participants,
+    )
+    mapped = apply_speaker_name_map(
+        {
+            "transcript_spans": assigned_spans,
+            "speakers": speakers,
+            "speaker_segments": speaker_segments,
+            "speaker_ids": [
+                item.get("speaker_id")
+                for item in speaker_segments
+                if item.get("speaker_id")
+            ],
+        },
+        speaker_mapping,
+    )
 
     return {
-        "speaker_segments": speaker_segments,
-        "transcript_spans": assigned_spans,
-        "speakers": speakers,
+        "speaker_segments": mapped["speaker_segments"],
+        "transcript_spans": mapped["transcript_spans"],
+        "speakers": mapped["speakers"],
+        "speaker_mapping": speaker_mapping,
         "timings": state.get("timings", {}),
         "progress": 82,
         "status": "diarization_done",
@@ -169,6 +192,7 @@ def evidence_stub_node(state: MeetingState) -> MeetingState:
             "start_ms": span["start_ms"],
             "end_ms": span["end_ms"],
             "speaker_id": span.get("speaker_id"),
+            "speaker_name": span.get("speaker_name"),
         })
 
     update_job_progress(

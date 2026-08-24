@@ -5,6 +5,13 @@ import json
 import shutil
 from fastapi.responses import FileResponse
 from services.pdf_report import generate_meeting_pdf
+from services.meeting_defaults import (
+    DEFAULT_MEETING_HOST,
+    DEFAULT_MEETING_LANGUAGE,
+    DEFAULT_MEETING_PARTICIPANTS,
+    DEFAULT_MEETING_TITLE,
+    parse_participants,
+)
 from .schemas import (
     ClaimReviewIn,
     DiarizationDebugOut,
@@ -76,6 +83,7 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
         "speakers": state.get("speakers", []),
         "speaker_segments": state.get("speaker_segments", []),
         "speaker_mapping": state.get("speaker_mapping", {}),
+        "speaker_name_map": state.get("speaker_name_map", {}),
         "transcript_spans": state.get("transcript_spans", []),
         "evidence_links": state.get("evidence_links", []),
         "claims": state.get("claims", []),
@@ -140,10 +148,10 @@ def create_meeting(payload: MeetingCreate):
     meeting_id = uuid4().hex
     item = {
         "meeting_id": meeting_id,
-        "title": payload.title,
-        "host": payload.host,
-        "language": payload.language,
-        "participants": payload.participants,
+        "title": payload.title or DEFAULT_MEETING_TITLE,
+        "host": payload.host or DEFAULT_MEETING_HOST,
+        "language": payload.language or DEFAULT_MEETING_LANGUAGE,
+        "participants": payload.participants or parse_participants(DEFAULT_MEETING_PARTICIPANTS),
         "status": "created",
         "audio_uri": None,
         "progress": 0,
@@ -417,6 +425,10 @@ def build_evidence_from_asr(meeting_id: str, asr_result: dict) -> list[dict]:
             "evidence_id": evidence_id,
             "meeting_id": meeting_id,
             "speaker_id": span.get("speaker_id", "speaker_unknown"),
+            "speaker_name": span.get(
+                "speaker_name",
+                span.get("display_name"),
+            ),
             "text": text,
             "start_ms": int(span.get("start_ms", 0)),
             "end_ms": int(span.get("end_ms", 0)),
@@ -451,8 +463,10 @@ def run_agent(meeting_id: str):
     state = {
         "meeting_id": meeting_id,
         "title": asr_result.get("title", "会议纪要"),
+        "participants": asr_result.get("participants", []),
         "evidence": evidence,
         "speaker_ids": sorted({item["speaker_id"] for item in evidence}),
+        "speaker_mapping": asr_result.get("speaker_mapping", {}),
         "contributions": [],
         "action_items": [],
         "risks": [],
@@ -487,8 +501,10 @@ def run_agent_workflow(
         "host": asr_result.get("host", "-"),
         "language": asr_result.get("language", "zh-CN"),
         "audio_info": asr_result.get("audio_info", {}),
+        "participants": asr_result.get("participants", []),
         "evidence": evidence,
         "speaker_ids": sorted({item["speaker_id"] for item in evidence}),
+        "speaker_mapping": asr_result.get("speaker_mapping", {}),
         "contributions": [],
         "action_items": [],
         "risks": [],
@@ -556,11 +572,7 @@ async def analyze_meeting(
         )
 
     participant_list = [
-        item.strip()
-        for item in participants
-        .replace(",", "\n")
-        .splitlines()
-        if item.strip()
+        *parse_participants(participants or DEFAULT_MEETING_PARTICIPANTS)
     ]
 
     meeting = {

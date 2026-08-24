@@ -9,6 +9,10 @@ from functools import lru_cache
 from pathlib import Path
 
 from faster_whisper import WhisperModel
+from services.speaker_identity import (
+    apply_speaker_name_map,
+    infer_speaker_name_map,
+)
 
 try:
     from opencc import OpenCC
@@ -105,6 +109,7 @@ def get_asr_model():
 def transcribe_audio(
     wav_path: str,
     meeting_id: str,
+    participants: list[str] | None = None,
 ) -> list[dict]:
     cache_config = {
         "model_path": MODEL_PATH,
@@ -123,18 +128,33 @@ def transcribe_audio(
     cached = load_cache("asr", cache_key)
 
     if cached:
-        cached_spans = cached.get("transcript_spans", [])
-
-        return reindex_spans(
+        cached_spans = reindex_spans(
             [
                 {
                     **item,
                     "meeting_id": meeting_id,
                 }
-                for item in cached_spans
+                for item in cached.get("transcript_spans", [])
             ],
             meeting_id,
         )
+
+        speaker_name_map = infer_speaker_name_map(
+            cached_spans,
+            participants,
+        )
+
+        return apply_speaker_name_map(
+            {
+                "transcript_spans": cached_spans,
+                "speaker_ids": sorted({
+                    item.get("speaker_id")
+                    for item in cached_spans
+                    if item.get("speaker_id")
+                }),
+            },
+            speaker_name_map,
+        )["transcript_spans"]
 
     model = get_asr_model()
 
@@ -176,12 +196,25 @@ def transcribe_audio(
         spans.extend(split_long_span(span))
 
     result = reindex_spans(spans, meeting_id)
+    speaker_name_map = infer_speaker_name_map(result, participants)
+    result = apply_speaker_name_map(
+        {
+            "transcript_spans": result,
+            "speaker_ids": sorted({
+                item.get("speaker_id")
+                for item in result
+                if item.get("speaker_id")
+            }),
+        },
+        speaker_name_map,
+    )["transcript_spans"]
 
     save_cache(
         "asr",
         cache_key,
         {
             "transcript_spans": result,
+            "speaker_name_map": speaker_name_map,
             "model_config": cache_config,
         },
     )

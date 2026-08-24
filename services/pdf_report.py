@@ -162,6 +162,16 @@ def _p_html(value, style) -> Paragraph:
     return Paragraph(str(value), style)
 
 
+def _speaker_name(item: dict, speaker_mapping: dict[str, str]) -> str:
+    speaker_id = item.get("speaker_id", "-")
+    return (
+        item.get("speaker_name")
+        or item.get("display_name")
+        or speaker_mapping.get(speaker_id)
+        or speaker_id
+    )
+
+
 def _claim_type(claim: dict) -> str:
     return str(claim.get("claim_type") or "关键结论")
 
@@ -276,7 +286,7 @@ def _metric_table(claims: list[dict], evidence: list[dict], styles) -> Table:
     return table
 
 
-def _claims_table(claims: list[dict], styles) -> Table:
+def _claims_table(claims: list[dict], styles, speaker_mapping: dict[str, str]) -> Table:
     rows = [[
         _p("类型", styles["TableHeader"]),
         _p("发言人", styles["TableHeader"]),
@@ -288,7 +298,7 @@ def _claims_table(claims: list[dict], styles) -> Table:
     for claim in claims:
         rows.append([
             _p(_claim_type(claim), styles["Table"]),
-            _p(claim.get("speaker_id", "-"), styles["Table"]),
+            _p(_speaker_name(claim, speaker_mapping), styles["Table"]),
             _p(claim.get("statement") or claim.get("summary", "-"), styles["Table"]),
             _p(claim.get("quote", "-"), styles["Table"]),
             _p(", ".join(claim.get("evidence_ids") or []) or "-", styles["Table"]),
@@ -308,7 +318,12 @@ def _claims_table(claims: list[dict], styles) -> Table:
     return table
 
 
-def _action_or_risk_table(claims: list[dict], styles, risk=False) -> Table:
+def _action_or_risk_table(
+    claims: list[dict],
+    styles,
+    speaker_mapping: dict[str, str],
+    risk=False,
+) -> Table:
     rows = [[
         _p("负责人" if not risk else "风险来源", styles["TableHeader"]),
         _p("行动项" if not risk else "风险描述", styles["TableHeader"]),
@@ -318,7 +333,7 @@ def _action_or_risk_table(claims: list[dict], styles, risk=False) -> Table:
     ]]
     for claim in claims:
         rows.append([
-            _p(claim.get("speaker_id", "-"), styles["Table"]),
+            _p(_speaker_name(claim, speaker_mapping), styles["Table"]),
             _p(claim.get("statement") or claim.get("summary", "-"), styles["Table"]),
             _p(
                 f"{format_ms(claim.get('start_ms'))}-"
@@ -341,7 +356,11 @@ def _action_or_risk_table(claims: list[dict], styles, risk=False) -> Table:
     return table
 
 
-def _evidence_table(evidence: list[dict], styles) -> Table:
+def _evidence_table(
+    evidence: list[dict],
+    styles,
+    speaker_mapping: dict[str, str],
+) -> Table:
     rows = [[
         _p("证据ID", styles["TableHeader"]),
         _p("发言人", styles["TableHeader"]),
@@ -352,7 +371,7 @@ def _evidence_table(evidence: list[dict], styles) -> Table:
     for item in evidence:
         rows.append([
             _p(item.get("evidence_id", "-"), styles["Table"]),
-            _p(item.get("speaker_id", "-"), styles["Table"]),
+            _p(_speaker_name(item, speaker_mapping), styles["Table"]),
             _p(
                 f"{format_ms(item.get('start_ms'))}-"
                 f"{format_ms(item.get('end_ms'))}",
@@ -406,6 +425,7 @@ def generate_meeting_pdf(meeting: dict) -> str:
     styles = build_styles()
     claims = meeting.get("claims") or []
     evidence = meeting.get("evidence_links") or []
+    speaker_mapping = meeting.get("speaker_mapping") or {}
     conclusions = [item for item in claims if _is_conclusion(item)]
     actions = [item for item in claims if _is_action(item)]
     risks = [item for item in claims if _is_risk(item)]
@@ -458,7 +478,7 @@ def generate_meeting_pdf(meeting: dict) -> str:
             _p("支撑度", styles["TableHeader"]),
         ]]
         for summary in summaries:
-            speaker_name = summary.get("display_name") or summary.get("speaker_id")
+            speaker_name = _speaker_name(summary, speaker_mapping)
             for point in summary.get("key_points") or []:
                 contribution_rows.append([
                     _p(speaker_name, styles["Table"]),
@@ -486,7 +506,7 @@ def generate_meeting_pdf(meeting: dict) -> str:
         PageBreak(),
         Paragraph("三、关键结论", styles["Section"]),
         (
-            _claims_table(conclusions, styles)
+            _claims_table(conclusions, styles, speaker_mapping)
             if conclusions
             else Paragraph("暂无关键结论。", styles["Body"])
         ),
@@ -495,13 +515,13 @@ def generate_meeting_pdf(meeting: dict) -> str:
         PageBreak(),
         Paragraph("四、行动项", styles["Section"]),
         (
-            _action_or_risk_table(actions, styles)
+            _action_or_risk_table(actions, styles, speaker_mapping)
             if actions
             else Paragraph("暂无行动项。", styles["Body"])
         ),
         Paragraph("五、风险项", styles["Section"]),
         (
-            _action_or_risk_table(risks, styles, risk=True)
+            _action_or_risk_table(risks, styles, speaker_mapping, risk=True)
             if risks
             else Paragraph("暂无风险项。", styles["Body"])
         ),
@@ -514,7 +534,7 @@ def generate_meeting_pdf(meeting: dict) -> str:
         ),
         Spacer(1, 3 * mm),
         (
-            _evidence_table(evidence, styles)
+            _evidence_table(evidence, styles, speaker_mapping)
             if evidence
             else Paragraph("暂无证据片段。", styles["Body"])
         ),
