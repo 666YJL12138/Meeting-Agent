@@ -1,19 +1,19 @@
-from pathlib import Path
-from html import escape
 from datetime import datetime
+from html import escape
+from pathlib import Path
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    SimpleDocTemplate,
+    PageBreak,
     Paragraph,
+    SimpleDocTemplate,
     Spacer,
     Table,
     TableStyle,
-    PageBreak,
 )
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -25,20 +25,32 @@ pdfmetrics.registerFont(UnicodeCIDFont(FONT_NAME))
 REPORT_DIR = Path("outputs/reports")
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
+NAVY = colors.HexColor("#17324D")
+LIGHT_BLUE = colors.HexColor("#EAF2FF")
+LIGHT_GRAY = colors.HexColor("#F5F7FA")
+BORDER = colors.HexColor("#D0D5DD")
+TEXT = colors.HexColor("#1D2939")
+MUTED = colors.HexColor("#667085")
+
 
 def format_ms(value: int | float | None) -> str:
     if value is None:
         return "-"
-    seconds = int(value // 1000)
-    minute = seconds // 60
-    second = seconds % 60
-    return f"{minute:02d}:{second:02d}"
+    seconds = max(0, int(float(value) // 1000))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
 def safe_text(value) -> str:
     if value is None:
         return ""
-    return escape(str(value))
+    return escape(str(value)).replace("\n", "<br/>")
+
+
+def format_confidence(value) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "-"
 
 
 def format_confidence_breakdown(value: dict | None) -> str:
@@ -53,7 +65,6 @@ def format_confidence_breakdown(value: dict | None) -> str:
         "asr_quality": "ASR质量",
         "diarization_quality": "声纹质量",
     }
-
     parts = []
     for key, label in labels.items():
         if key not in value:
@@ -62,187 +73,462 @@ def format_confidence_breakdown(value: dict | None) -> str:
             parts.append(f"{label}={float(value[key]):.2f}")
         except (TypeError, ValueError):
             parts.append(f"{label}={safe_text(value[key])}")
-
     return "；".join(parts) or "-"
 
 
 def build_styles():
     styles = getSampleStyleSheet()
-
-    styles["Title"].fontName = FONT_NAME
-    styles["Title"].fontSize = 22
-    styles["Title"].leading = 30
-    styles["Title"].alignment = TA_CENTER
-
-    styles["Heading1"].fontName = FONT_NAME
-    styles["Heading1"].fontSize = 15
-    styles["Heading1"].leading = 22
-    styles["Heading1"].spaceBefore = 14
-    styles["Heading1"].spaceAfter = 8
-
-    styles["Heading2"].fontName = FONT_NAME
-    styles["Heading2"].fontSize = 12
-    styles["Heading2"].leading = 18
-    styles["Heading2"].spaceBefore = 8
-    styles["Heading2"].spaceAfter = 6
-
-    styles["BodyText"].fontName = FONT_NAME
-    styles["BodyText"].fontSize = 10
-    styles["BodyText"].leading = 16
-
+    styles.add(ParagraphStyle(
+        name="ReportTitle",
+        fontName=FONT_NAME,
+        fontSize=24,
+        leading=32,
+        alignment=TA_CENTER,
+        textColor=NAVY,
+        spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="ReportSubtitle",
+        fontName=FONT_NAME,
+        fontSize=10,
+        leading=16,
+        alignment=TA_CENTER,
+        textColor=MUTED,
+        spaceAfter=14,
+    ))
+    styles.add(ParagraphStyle(
+        name="Section",
+        fontName=FONT_NAME,
+        fontSize=15,
+        leading=22,
+        textColor=NAVY,
+        spaceBefore=12,
+        spaceAfter=8,
+    ))
+    styles.add(ParagraphStyle(
+        name="Body",
+        fontName=FONT_NAME,
+        fontSize=9.5,
+        leading=15,
+        textColor=TEXT,
+    ))
     styles.add(ParagraphStyle(
         name="Small",
-        parent=styles["BodyText"],
         fontName=FONT_NAME,
-        fontSize=8,
-        leading=12,
-        textColor=colors.HexColor("#555555"),
+        fontSize=7.5,
+        leading=11,
+        textColor=MUTED,
     ))
-
     styles.add(ParagraphStyle(
-        name="Quote",
-        parent=styles["BodyText"],
+        name="Table",
         fontName=FONT_NAME,
-        fontSize=9,
-        leading=14,
-        leftIndent=8,
-        textColor=colors.HexColor("#333333"),
+        fontSize=7.8,
+        leading=11,
+        textColor=TEXT,
     ))
-
+    styles.add(ParagraphStyle(
+        name="TableHeader",
+        fontName=FONT_NAME,
+        fontSize=7.8,
+        leading=11,
+        textColor=colors.white,
+        alignment=TA_LEFT,
+    ))
+    styles.add(ParagraphStyle(
+        name="MetricValue",
+        fontName=FONT_NAME,
+        fontSize=15,
+        leading=18,
+        alignment=TA_CENTER,
+        textColor=NAVY,
+    ))
+    styles.add(ParagraphStyle(
+        name="MetricLabel",
+        fontName=FONT_NAME,
+        fontSize=7.5,
+        leading=10,
+        alignment=TA_CENTER,
+        textColor=MUTED,
+    ))
     return styles
 
 
-def add_page_number(canvas, doc):
-    canvas.saveState()
-    canvas.setFont(FONT_NAME, 8)
-    canvas.setFillColor(colors.HexColor("#666666"))
-    canvas.drawRightString(200 * mm, 12 * mm, f"第 {doc.page} 页")
-    canvas.restoreState()
+def _p(value, style) -> Paragraph:
+    return Paragraph(safe_text(value), style)
 
 
-def generate_meeting_pdf(meeting: dict) -> str:
-    meeting_id = meeting["meeting_id"]
-    output_path = REPORT_DIR / f"{meeting_id}_trusted_minutes.pdf"
+def _p_html(value, style) -> Paragraph:
+    """Build a Paragraph from already escaped text with controlled breaks."""
+    return Paragraph(str(value), style)
 
-    doc = SimpleDocTemplate(
-        str(output_path),
-        pagesize=A4,
-        rightMargin=18 * mm,
-        leftMargin=18 * mm,
-        topMargin=16 * mm,
-        bottomMargin=18 * mm,
-    )
 
-    styles = build_styles()
-    story = []
+def _claim_type(claim: dict) -> str:
+    return str(claim.get("claim_type") or "关键结论")
 
-    story.append(Paragraph("可信会议纪要", styles["Title"]))
-    story.append(Spacer(1, 10))
 
+def _is_action(claim: dict) -> bool:
+    value = _claim_type(claim).lower()
+    return any(token in value for token in ("action", "待办", "行动", "任务"))
+
+
+def _is_risk(claim: dict) -> bool:
+    value = _claim_type(claim).lower()
+    return "risk" in value or "风险" in value
+
+
+def _is_conclusion(claim: dict) -> bool:
+    return not _is_action(claim) and not _is_risk(claim)
+
+
+def _table_style(header_color=NAVY, right_align_columns=()) -> TableStyle:
+    commands = [
+        ("FONTNAME", (0, 0), (-1, -1), FONT_NAME),
+        ("BACKGROUND", (0, 0), (-1, 0), header_color),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.35, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]
+    for column in right_align_columns:
+        commands.append(("ALIGN", (column, 1), (column, -1), "RIGHT"))
+    return TableStyle(commands)
+
+
+def _metadata_table(meeting: dict, styles) -> Table:
     audio_info = meeting.get("audio_info") or {}
     duration = audio_info.get("duration_seconds")
-
-    meta_rows = [
-        ["会议ID", safe_text(meeting_id)],
-        ["会议标题", safe_text(meeting.get("title", "未命名会议"))],
-        ["主持人", safe_text(meeting.get("host", "-"))],
-        ["语言", safe_text(meeting.get("language", "zh-CN"))],
-        ["会议状态", safe_text(meeting.get("status", "-"))],
-        ["音频时长", f"{duration:.2f} 秒" if duration else "-"],
-        ["生成时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+    rows = [
+        ["会议标题", meeting.get("title", "未命名会议")],
+        ["主持人", meeting.get("host", "-")],
+        ["会议ID", meeting.get("meeting_id", "-")],
+        [
+            "语言 / 状态",
+            f"{meeting.get('language', 'zh-CN')} / {meeting.get('status', '-')}",
+        ],
+        ["音频时长", f"{float(duration):.2f} 秒" if duration else "-"],
+        ["报告生成时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
     ]
-
-    meta_table = Table(meta_rows, colWidths=[30 * mm, 130 * mm])
-    meta_table.setStyle(TableStyle([
+    table = Table(
+        [[_p(left, styles["Table"]), _p(right, styles["Table"])] for left, right in rows],
+        colWidths=[32 * mm, 128 * mm],
+        hAlign="LEFT",
+    )
+    table.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), FONT_NAME),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F2F4F7")),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D0D5DD")),
+        ("BACKGROUND", (0, 0), (0, -1), LIGHT_BLUE),
+        ("GRID", (0, 0), (-1, -1), 0.35, BORDER),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 7),
         ("RIGHTPADDING", (0, 0), (-1, -1), 7),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
-    story.append(meta_table)
-    story.append(Spacer(1, 6))
-    story.append(Paragraph(
-        "评分说明：证据支撑度由系统根据证据绑定、原话匹配、"
-        "说话人/时间一致性、ASR质量和声纹归因质量计算，"
-        "不是语言模型自报的概率。",
-        styles["Small"],
-    ))
+    return table
 
-    story.append(Paragraph("一、发言人关键贡献概览", styles["Heading1"]))
+
+def _metric_table(claims: list[dict], evidence: list[dict], styles) -> Table:
+    speakers = {
+        item.get("speaker_id")
+        for item in claims + evidence
+        if item.get("speaker_id")
+    }
+    values = []
+    confidence_values = []
+    for claim in claims:
+        try:
+            confidence_values.append(float(claim.get("confidence")))
+        except (TypeError, ValueError):
+            continue
+    average_confidence = (
+        sum(confidence_values) / len(confidence_values)
+        if confidence_values
+        else 0
+    )
+    values.extend([
+        ("发言人数", len(speakers)),
+        ("关键结论", sum(_is_conclusion(item) for item in claims)),
+        ("行动项", sum(_is_action(item) for item in claims)),
+        ("风险项", sum(_is_risk(item) for item in claims)),
+        ("证据片段", len(evidence)),
+        ("平均支撑度", format_confidence(average_confidence)),
+    ])
+    table = Table(
+        [
+            [_p(value, styles["MetricValue"]) for label, value in values],
+            [_p(label, styles["MetricLabel"]) for label, value in values],
+        ],
+        colWidths=[29 * mm] * len(values),
+        hAlign="LEFT",
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT_GRAY),
+        ("BOX", (0, 0), (-1, -1), 0.4, BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    return table
+
+
+def _claims_table(claims: list[dict], styles) -> Table:
+    rows = [[
+        _p("类型", styles["TableHeader"]),
+        _p("发言人", styles["TableHeader"]),
+        _p("结论摘要", styles["TableHeader"]),
+        _p("原话", styles["TableHeader"]),
+        _p("证据ID", styles["TableHeader"]),
+        _p("支撑度", styles["TableHeader"]),
+    ]]
+    for claim in claims:
+        rows.append([
+            _p(_claim_type(claim), styles["Table"]),
+            _p(claim.get("speaker_id", "-"), styles["Table"]),
+            _p(claim.get("statement") or claim.get("summary", "-"), styles["Table"]),
+            _p(claim.get("quote", "-"), styles["Table"]),
+            _p(", ".join(claim.get("evidence_ids") or []) or "-", styles["Table"]),
+            _p_html(
+                f"{format_confidence(claim.get('confidence'))}<br/>"
+                f"{format_confidence_breakdown(claim.get('confidence_breakdown'))}",
+                styles["Table"],
+            ),
+        ])
+    table = Table(
+        rows,
+        colWidths=[19 * mm, 22 * mm, 39 * mm, 46 * mm, 25 * mm, 29 * mm],
+        repeatRows=1,
+        hAlign="LEFT",
+    )
+    table.setStyle(_table_style(right_align_columns=(5,)))
+    return table
+
+
+def _action_or_risk_table(claims: list[dict], styles, risk=False) -> Table:
+    rows = [[
+        _p("负责人" if not risk else "风险来源", styles["TableHeader"]),
+        _p("行动项" if not risk else "风险描述", styles["TableHeader"]),
+        _p("时间", styles["TableHeader"]),
+        _p("证据", styles["TableHeader"]),
+        _p("支撑度", styles["TableHeader"]),
+    ]]
+    for claim in claims:
+        rows.append([
+            _p(claim.get("speaker_id", "-"), styles["Table"]),
+            _p(claim.get("statement") or claim.get("summary", "-"), styles["Table"]),
+            _p(
+                f"{format_ms(claim.get('start_ms'))}-"
+                f"{format_ms(claim.get('end_ms'))}",
+                styles["Table"],
+            ),
+            _p(", ".join(claim.get("evidence_ids") or []) or "-", styles["Table"]),
+            _p(format_confidence(claim.get("confidence")), styles["Table"]),
+        ])
+    table = Table(
+        rows,
+        colWidths=[25 * mm, 78 * mm, 27 * mm, 35 * mm, 18 * mm],
+        repeatRows=1,
+        hAlign="LEFT",
+    )
+    table.setStyle(_table_style(
+        header_color=colors.HexColor("#7A271A") if risk else NAVY,
+        right_align_columns=(4,),
+    ))
+    return table
+
+
+def _evidence_table(evidence: list[dict], styles) -> Table:
+    rows = [[
+        _p("证据ID", styles["TableHeader"]),
+        _p("发言人", styles["TableHeader"]),
+        _p("时间", styles["TableHeader"]),
+        _p("原话", styles["TableHeader"]),
+        _p("ASR / 声纹", styles["TableHeader"]),
+    ]]
+    for item in evidence:
+        rows.append([
+            _p(item.get("evidence_id", "-"), styles["Table"]),
+            _p(item.get("speaker_id", "-"), styles["Table"]),
+            _p(
+                f"{format_ms(item.get('start_ms'))}-"
+                f"{format_ms(item.get('end_ms'))}",
+                styles["Table"],
+            ),
+            _p(item.get("quote") or item.get("text", "-"), styles["Table"]),
+            _p_html(
+                f"{format_confidence(item.get('asr_confidence'))} / "
+                f"{format_confidence(item.get('speaker_confidence'))}<br/>"
+                f"{safe_text(item.get('speaker_source', 'unknown'))}",
+                styles["Table"],
+            ),
+        ])
+    table = Table(
+        rows,
+        colWidths=[34 * mm, 22 * mm, 27 * mm, 57 * mm, 21 * mm],
+        repeatRows=1,
+        hAlign="LEFT",
+    )
+    table.setStyle(_table_style())
+    return table
+
+
+def _draw_header_footer(canvas, doc):
+    canvas.saveState()
+    width, height = A4
+    canvas.setStrokeColor(BORDER)
+    canvas.setLineWidth(0.5)
+    canvas.line(18 * mm, height - 13 * mm, width - 18 * mm, height - 13 * mm)
+    canvas.setFont(FONT_NAME, 7.5)
+    canvas.setFillColor(MUTED)
+    canvas.drawString(18 * mm, height - 10 * mm, "可信会议纪要")
+    canvas.drawRightString(width - 18 * mm, 10 * mm, f"第 {doc.page} 页")
+    canvas.line(18 * mm, 14 * mm, width - 18 * mm, 14 * mm)
+    canvas.restoreState()
+
+
+def generate_meeting_pdf(meeting: dict) -> str:
+    meeting_id = meeting["meeting_id"]
+    output_path = REPORT_DIR / f"{meeting_id}_trusted_minutes.pdf"
+    doc = SimpleDocTemplate(
+        str(output_path),
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=19 * mm,
+        bottomMargin=19 * mm,
+        title=str(meeting.get("title", "可信会议纪要")),
+        author="Meeting-Agent",
+    )
+    styles = build_styles()
+    claims = meeting.get("claims") or []
+    evidence = meeting.get("evidence_links") or []
+    conclusions = [item for item in claims if _is_conclusion(item)]
+    actions = [item for item in claims if _is_action(item)]
+    risks = [item for item in claims if _is_risk(item)]
+    speakers = sorted({
+        item.get("speaker_id")
+        for item in claims + evidence
+        if item.get("speaker_id")
+    })
+
+    story = [
+        Spacer(1, 8 * mm),
+        Paragraph("可信会议纪要", styles["ReportTitle"]),
+        Paragraph(
+            "Meeting-Agent · Evidence-backed Meeting Report",
+            styles["ReportSubtitle"],
+        ),
+        _metadata_table(meeting, styles),
+        Spacer(1, 6 * mm),
+        Paragraph("报告指标", styles["Section"]),
+        _metric_table(claims, evidence, styles),
+        Spacer(1, 5 * mm),
+        Paragraph(
+            "本报告由语音识别、说话人分离、多 Agent 信息抽取和证据链校验流程生成。"
+            "关键内容均尽量保留原始证据、说话人和时间范围，置信度为证据加权支撑度，"
+            "不代表语言模型自报概率。",
+            styles["Small"],
+        ),
+        Paragraph("一、执行摘要", styles["Section"]),
+        Paragraph(
+            f"本次会议共识别 {len(speakers)} 位发言人，形成 "
+            f"{len(conclusions)} 条关键结论、{len(actions)} 条行动项和 "
+            f"{len(risks)} 条风险项，关联 {len(evidence)} 个证据片段。",
+            styles["Body"],
+        ),
+        Paragraph(
+            f"发言人：{safe_text('、'.join(speakers))}" if speakers else "发言人：-",
+            styles["Body"],
+        ),
+        PageBreak(),
+        Paragraph("二、发言人关键贡献", styles["Section"]),
+    ]
 
     summaries = meeting.get("speaker_summaries") or []
-    if not summaries:
-        story.append(Paragraph("暂无发言人摘要，请先运行 /run-asr。", styles["BodyText"]))
-    else:
+    if summaries:
+        contribution_rows = [[
+            _p("发言人", styles["TableHeader"]),
+            _p("类型", styles["TableHeader"]),
+            _p("关键贡献", styles["TableHeader"]),
+            _p("证据", styles["TableHeader"]),
+            _p("支撑度", styles["TableHeader"]),
+        ]]
         for summary in summaries:
             speaker_name = summary.get("display_name") or summary.get("speaker_id")
-            story.append(Paragraph(f"发言人：{safe_text(speaker_name)}", styles["Heading2"]))
-
-            key_points = summary.get("key_points") or []
-            for point in key_points:
-                evidence_ids = ", ".join(point.get("evidence_ids", []))
-                text = (
-                    f"类型：{safe_text(point.get('claim_type'))}；"
-                    f"证据支撑度：{point.get('confidence', '-')}; "
-                    f"证据：{safe_text(evidence_ids)}<br/>"
-                    f"评分明细：{safe_text(format_confidence_breakdown(point.get('confidence_breakdown')))}<br/>"
-                    f"{safe_text(point.get('statement'))}"
-                )
-                story.append(Paragraph(text, styles["BodyText"]))
-                story.append(Spacer(1, 4))
-
-    story.append(PageBreak())
-    story.append(Paragraph("二、可追溯关键结论明细", styles["Heading1"]))
-
-    claims = meeting.get("claims") or []
-    if not claims:
-        story.append(Paragraph("暂无关键结论。", styles["BodyText"]))
-    else:
-        for index, claim in enumerate(claims, start=1):
-            title = (
-                f"{index}. {safe_text(claim.get('claim_type'))} | "
-                f"{safe_text(claim.get('speaker_id'))} | "
-                f"{format_ms(claim.get('start_ms'))}-{format_ms(claim.get('end_ms'))}"
-            )
-            story.append(Paragraph(title, styles["Heading2"]))
-
-            story.append(Paragraph(
-                f"总结：{safe_text(claim.get('statement'))}",
-                styles["BodyText"],
-            ))
-
-            story.append(Paragraph(
-                f"原话：{safe_text(claim.get('quote'))}",
-                styles["Quote"],
-            ))
-
-            story.append(Paragraph(
-                f"证据ID：{safe_text(', '.join(claim.get('evidence_ids', [])))}；"
-                f"证据支撑度：{claim.get('confidence', '-')}; "
-                f"评分明细：{safe_text(format_confidence_breakdown(claim.get('confidence_breakdown')))}；"
-                f"审核状态：{safe_text(claim.get('review_status'))}",
-                styles["Small"],
-            ))
-            story.append(Spacer(1, 8))
-
-    story.append(PageBreak())
-    story.append(Paragraph("三、原始证据片段附录", styles["Heading1"]))
-
-    for evidence in meeting.get("evidence_links") or []:
-        line = (
-            f"{safe_text(evidence.get('evidence_id'))} | "
-            f"{safe_text(evidence.get('speaker_id'))} | "
-            f"{format_ms(evidence.get('start_ms'))}-{format_ms(evidence.get('end_ms'))}<br/>"
-            f"{safe_text(evidence.get('quote'))}"
+            for point in summary.get("key_points") or []:
+                contribution_rows.append([
+                    _p(speaker_name, styles["Table"]),
+                    _p(_claim_type(point), styles["Table"]),
+                    _p(point.get("statement") or point.get("summary", "-"), styles["Table"]),
+                    _p(", ".join(point.get("evidence_ids") or []) or "-", styles["Table"]),
+                    _p_html(
+                        f"{format_confidence(point.get('confidence'))}<br/>"
+                        f"{safe_text(format_confidence_breakdown(point.get('confidence_breakdown')))}",
+                        styles["Table"],
+                    ),
+                ])
+        contribution_table = Table(
+            contribution_rows,
+            colWidths=[25 * mm, 21 * mm, 65 * mm, 28 * mm, 30 * mm],
+            repeatRows=1,
+            hAlign="LEFT",
         )
-        story.append(Paragraph(line, styles["BodyText"]))
-        story.append(Spacer(1, 5))
+        contribution_table.setStyle(_table_style(right_align_columns=(4,)))
+        story.append(contribution_table)
+    else:
+        story.append(Paragraph("暂无发言人贡献摘要。", styles["Body"]))
 
-    doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
+    story.extend([
+        PageBreak(),
+        Paragraph("三、关键结论", styles["Section"]),
+        (
+            _claims_table(conclusions, styles)
+            if conclusions
+            else Paragraph("暂无关键结论。", styles["Body"])
+        ),
+    ])
+    story.extend([
+        PageBreak(),
+        Paragraph("四、行动项", styles["Section"]),
+        (
+            _action_or_risk_table(actions, styles)
+            if actions
+            else Paragraph("暂无行动项。", styles["Body"])
+        ),
+        Paragraph("五、风险项", styles["Section"]),
+        (
+            _action_or_risk_table(risks, styles, risk=True)
+            if risks
+            else Paragraph("暂无风险项。", styles["Body"])
+        ),
+        PageBreak(),
+        Paragraph("六、证据链附录", styles["Section"]),
+        Paragraph(
+            "下表保留原始证据片段、时间范围、ASR 置信度、说话人置信度和归因来源，"
+            "可用于复核报告中的结论、行动项与风险项。",
+            styles["Small"],
+        ),
+        Spacer(1, 3 * mm),
+        (
+            _evidence_table(evidence, styles)
+            if evidence
+            else Paragraph("暂无证据片段。", styles["Body"])
+        ),
+        Spacer(1, 7 * mm),
+        Paragraph(
+            f"审核状态：{safe_text(meeting.get('status', '-'))}　"
+            f"证据条数：{len(evidence)}　生成引擎：Meeting-Agent",
+            styles["Small"],
+        ),
+    ])
 
+    doc.build(
+        story,
+        onFirstPage=_draw_header_footer,
+        onLaterPages=_draw_header_footer,
+    )
     return str(output_path)

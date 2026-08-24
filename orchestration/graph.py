@@ -1,3 +1,6 @@
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from langgraph.graph import StateGraph, START, END
 
 from agents.claim_agent import ClaimAgent
@@ -7,6 +10,23 @@ from agents.rag_agent import RAGAgent
 from agents.report_agent import ReportAgent
 from llm.schemas import AgentClaim
 from orchestration.state import MeetingAgentState
+from services.performance import measure_stage
+
+
+CLAIM_TASKS = {
+    "contributions": (
+        "\u63d0\u53d6\u6bcf\u4e2a\u53d1\u8a00\u4eba\u7684\u5173\u952e\u8d21\u732e",
+        "\u89c2\u70b9",
+    ),
+    "action_items": (
+        "\u63d0\u53d6\u4f1a\u8bae\u4e2d\u7684\u884c\u52a8\u9879\u3001\u8d1f\u8d23\u4eba\u548c\u4efb\u52a1",
+        "\u884c\u52a8\u9879",
+    ),
+    "risks": (
+        "\u63d0\u53d6\u4f1a\u8bae\u4e2d\u63d0\u5230\u7684\u98ce\u9669\u3001\u963b\u585e\u548c\u4e0d\u786e\u5b9a\u6027",
+        "\u98ce\u9669",
+    ),
+}
 
 
 def _fallback_claim(
@@ -43,30 +63,20 @@ def _fallback_claim(
     return claims
 
 
-def extract_contributions(state: MeetingAgentState) -> MeetingAgentState:
-    try:
-        agent = ClaimAgent("\u63d0\u53d6\u6bcf\u4e2a\u53d1\u8a00\u4eba\u7684\u5173\u952e\u8d21\u732e", "\u89c2\u70b9")
-        claims = agent.run(state["meeting_id"], state["evidence"])
-        state["contributions"] = [item.model_dump() for item in claims]
-    except Exception as exc:
-        state["errors"].append(f"extract_contributions failed: {exc}")
-        state["contributions"] = _fallback_claim(
+def _fallback_for_task(
+    state: MeetingAgentState,
+    key: str,
+) -> list[dict]:
+    if key == "contributions":
+        return _fallback_claim(
             state,
             "\u89c2\u70b9",
             ["\u5efa\u8bae", "\u51b3\u7b56", "\u786e\u8ba4", "\u603b\u7ed3"],
             "\u6839\u636e\u539f\u8bdd\u63d0\u53d6\u7684\u5173\u952e\u8d21\u732e",
         )
-    return state
 
-
-def extract_action_items(state: MeetingAgentState) -> MeetingAgentState:
-    try:
-        agent = ClaimAgent("\u63d0\u53d6\u4f1a\u8bae\u4e2d\u7684\u884c\u52a8\u9879\u3001\u8d1f\u8d23\u4eba\u548c\u4efb\u52a1", "\u884c\u52a8\u9879")
-        claims = agent.run(state["meeting_id"], state["evidence"])
-        state["action_items"] = [item.model_dump() for item in claims]
-    except Exception as exc:
-        state["errors"].append(f"extract_action_items failed: {exc}")
-        state["action_items"] = _fallback_claim(
+    if key == "action_items":
+        return _fallback_claim(
             state,
             "\u884c\u52a8\u9879",
             [
@@ -88,22 +98,96 @@ def extract_action_items(state: MeetingAgentState) -> MeetingAgentState:
             "\u6839\u636e\u539f\u8bdd\u63d0\u53d6\u7684\u884c\u52a8\u9879",
             exclude_keywords=["\u98ce\u9669\u70b9", "\u98ce\u9669"],
         )
+
+    return _fallback_claim(
+        state,
+        "\u98ce\u9669",
+        ["\u98ce\u9669", "\u566a\u58f0", "\u9519\u8bef", "\u4eba\u5de5", "\u95ee\u9898"],
+        "\u6839\u636e\u539f\u8bdd\u63d0\u53d6\u7684\u98ce\u9669\u70b9",
+    )
+
+
+def _run_claim_task(
+    state: MeetingAgentState,
+    key: str,
+) -> tuple[str, list[dict], str | None]:
+    task_type, claim_type = CLAIM_TASKS[key]
+
+    try:
+        agent = ClaimAgent(task_type, claim_type)
+        claims = agent.run(state["meeting_id"], state["evidence"])
+        return key, [item.model_dump() for item in claims], None
+    except Exception as exc:
+        return (
+            key,
+            _fallback_for_task(state, key),
+            f"{key} failed: {exc}",
+        )
+
+
+def _apply_claim_task(
+    state: MeetingAgentState,
+    key: str,
+) -> MeetingAgentState:
+    result_key, claims, error = _run_claim_task(state, key)
+    state[result_key] = claims
+    if error:
+        state.setdefault("errors", []).append(error)
     return state
 
 
+def extract_contributions(state: MeetingAgentState) -> MeetingAgentState:
+    return _apply_claim_task(state, "contributions")
+
+
+def extract_action_items(state: MeetingAgentState) -> MeetingAgentState:
+    return _apply_claim_task(state, "action_items")
+
+
 def extract_risks(state: MeetingAgentState) -> MeetingAgentState:
-    try:
-        agent = ClaimAgent("\u63d0\u53d6\u4f1a\u8bae\u4e2d\u63d0\u5230\u7684\u98ce\u9669\u3001\u963b\u585e\u548c\u4e0d\u786e\u5b9a\u6027", "\u98ce\u9669")
-        claims = agent.run(state["meeting_id"], state["evidence"])
-        state["risks"] = [item.model_dump() for item in claims]
-    except Exception as exc:
-        state["errors"].append(f"extract_risks failed: {exc}")
-        state["risks"] = _fallback_claim(
-            state,
-            "\u98ce\u9669",
-            ["\u98ce\u9669", "\u566a\u58f0", "\u9519\u8bef", "\u4eba\u5de5", "\u95ee\u9898"],
-            "\u6839\u636e\u539f\u8bdd\u63d0\u53d6\u7684\u98ce\u9669\u70b9",
-        )
+    return _apply_claim_task(state, "risks")
+
+
+def extract_all_claims(
+    state: MeetingAgentState,
+) -> MeetingAgentState:
+    """Run independent claim agents concurrently and merge deterministically."""
+    max_workers = int(os.getenv("LLM_CONCURRENCY", "3"))
+    max_workers = max(1, min(len(CLAIM_TASKS), max_workers))
+    results = {}
+    errors = []
+
+    with measure_stage(state, "agent_claim_extraction"):
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="claim-agent",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    _run_claim_task,
+                    state,
+                    key,
+                ): key
+                for key in CLAIM_TASKS
+            }
+
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    result_key, claims, error = future.result()
+                except Exception as exc:
+                    result_key = key
+                    claims = _fallback_for_task(state, key)
+                    error = f"{key} failed: {exc}"
+
+                results[result_key] = claims
+                if error:
+                    errors.append(error)
+
+    for key in CLAIM_TASKS:
+        state[key] = results.get(key, [])
+
+    state.setdefault("errors", []).extend(errors)
     return state
 
 
@@ -162,18 +246,14 @@ def deliver_report_email(state: MeetingAgentState) -> MeetingAgentState:
 
 def build_meeting_graph():
     graph = StateGraph(MeetingAgentState)
-    graph.add_node("extract_contributions", extract_contributions)
-    graph.add_node("extract_action_items", extract_action_items)
-    graph.add_node("extract_risks", extract_risks)
+    graph.add_node("extract_all_claims", extract_all_claims)
     graph.add_node("verify_all_claims", verify_all_claims)
     graph.add_node("rag_enrich_claims", rag_enrich_claims)
     graph.add_node("generate_report", generate_report)
     graph.add_node("deliver_report_email", deliver_report_email)
 
-    graph.add_edge(START, "extract_contributions")
-    graph.add_edge("extract_contributions", "extract_action_items")
-    graph.add_edge("extract_action_items", "extract_risks")
-    graph.add_edge("extract_risks", "verify_all_claims")
+    graph.add_edge(START, "extract_all_claims")
+    graph.add_edge("extract_all_claims", "verify_all_claims")
     graph.add_edge("verify_all_claims", "rag_enrich_claims")
     graph.add_edge("rag_enrich_claims", "generate_report")
     graph.add_edge("generate_report", "deliver_report_email")

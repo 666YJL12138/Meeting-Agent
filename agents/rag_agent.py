@@ -1,9 +1,23 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 from services.vector_store import search_meeting
 
 
 class RAGAgent:
-    def __init__(self, top_k: int = 3):
+    def __init__(
+        self,
+        top_k: int = 3,
+        max_workers: int | None = None,
+    ):
         self.top_k = top_k
+        self.max_workers = max(
+            1,
+            int(
+                max_workers
+                or os.getenv("RAG_MAX_WORKERS", "4")
+            ),
+        )
 
     def enrich_claims(
         self,
@@ -11,9 +25,10 @@ class RAGAgent:
         claims: list[dict],
         evidence: list[dict],
     ) -> list[dict]:
-        supplements = []
+        if not claims:
+            return []
 
-        for claim in claims:
+        def enrich_one(claim: dict) -> dict:
             query = self._build_query(claim)
             hits = self._search_with_fallback(
                 meeting_id=meeting_id,
@@ -21,15 +36,19 @@ class RAGAgent:
                 evidence=evidence,
             )
 
-            supplements.append({
+            return {
                 "claim_summary": claim.get("summary", ""),
                 "claim_type": claim.get("claim_type", ""),
                 "speaker_id": claim.get("speaker_id", ""),
                 "query": query,
                 "hits": hits,
-            })
+            }
 
-        return supplements
+        # executor.map preserves input order while independent searches run
+        # concurrently.
+        worker_count = min(self.max_workers, len(claims))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            return list(executor.map(enrich_one, claims))
 
     def _build_query(self, claim: dict) -> str:
         return " ".join([

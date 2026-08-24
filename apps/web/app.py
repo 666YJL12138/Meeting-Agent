@@ -1,3 +1,4 @@
+from html import escape
 import requests
 import time
 import streamlit as st
@@ -5,6 +6,24 @@ from urllib.parse import quote
 
 
 API_BASE = "http://127.0.0.1:8000"
+
+
+def html_text(value) -> str:
+    return escape(str(value if value is not None else ""))
+
+
+def claim_type_text(claim: dict) -> str:
+    return str(claim.get("claim_type") or "关键结论")
+
+
+def is_action_claim(claim: dict) -> bool:
+    value = claim_type_text(claim).lower()
+    return any(item in value for item in ("action", "待办", "行动", "任务"))
+
+
+def is_risk_claim(claim: dict) -> bool:
+    value = claim_type_text(claim).lower()
+    return "risk" in value or "风险" in value
 
 
 st.set_page_config(
@@ -54,6 +73,12 @@ st.markdown(
         border-radius: 6px;
         color: #344054;
         margin-top: 8px;
+    }
+    .action-box {
+        border-left-color: #12B76A;
+    }
+    .risk-box {
+        border-left-color: #F04438;
     }
     </style>
     """,
@@ -376,17 +401,8 @@ def run_async_analysis_web(
 
 
 def ordered_job_history(history: list[dict]) -> list[dict]:
-    """Keep old malformed timelines readable while preserving stable order."""
-    return [
-        item
-        for _, item in sorted(
-            enumerate(history),
-            key=lambda pair: (
-                int(pair[1].get("progress", 0)),
-                pair[0],
-            ),
-        )
-    ]
+    """Display backend event order; progress is not a sort key."""
+    return list(history or [])
 
 
 def render_job_history():
@@ -568,13 +584,13 @@ def render_speaker_summaries(result: dict):
             st.markdown(
                 f"""
                 <div class="claim-box">
-                    <b>类型：</b>{point.get("claim_type", "-")}
+                    <b>类型：</b>{html_text(point.get("claim_type", "-"))}
                     &nbsp;&nbsp;
-                    <b>置信度：</b>{point.get("confidence", "-")}
+                    <b>置信度：</b>{html_text(point.get("confidence", "-"))}
                     <br/>
-                    <b>要点：</b>{point.get("statement", "")}
+                    <b>要点：</b>{html_text(point.get("statement", ""))}
                     <br/>
-                    <b>证据：</b>{evidence_ids}
+                    <b>证据：</b>{html_text(evidence_ids)}
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -582,7 +598,10 @@ def render_speaker_summaries(result: dict):
 
 
 def render_claims(result: dict):
-    claims = result.get("claims") or []
+    claims = [
+        claim for claim in (result.get("claims") or [])
+        if not is_action_claim(claim) and not is_risk_claim(claim)
+    ]
 
     st.markdown('<div class="section-title">可追溯关键结论</div>', unsafe_allow_html=True)
 
@@ -598,26 +617,146 @@ def render_claims(result: dict):
         st.markdown(
             f"""
             <div class="claim-box">
-                <b>{claim.get("claim_type", "-")}</b>
+                <b>{html_text(claim_type_text(claim))}</b>
                 &nbsp;|&nbsp;
-                发言人：{claim.get("speaker_id", "-")}
+                发言人：{html_text(claim.get("speaker_id", "-"))}
                 &nbsp;|&nbsp;
-                时间：{start_ms}ms - {end_ms}ms
+                时间：{html_text(start_ms)}ms - {html_text(end_ms)}ms
                 <br/>
-                <b>总结：</b>{claim.get("statement", "")}
-                <div class="quote-box">
-                    <b>原话：</b>{claim.get("quote", "")}
+                <b>总结：</b>{html_text(claim.get("statement", ""))}
+                <div class="quote-box">{'<b>原话：</b>' + html_text(claim.get("quote", ""))}
                 </div>
                 <br/>
-                <b>证据ID：</b>{evidence_ids}
+                <b>证据ID：</b>{html_text(evidence_ids)}
                 &nbsp;&nbsp;
-                <b>置信度：</b>{claim.get("confidence", "-")}
+                <b>置信度：</b>{html_text(claim.get("confidence", "-"))}
                 &nbsp;&nbsp;
-                <b>审核状态：</b>{claim.get("review_status", "-")}
+                <b>审核状态：</b>{html_text(claim.get("review_status", "-"))}
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+
+def render_action_items(result: dict):
+    claims = [
+        claim for claim in result.get("action_items", [])
+    ]
+    if not claims:
+        claims = [
+            claim for claim in result.get("claims", [])
+            if is_action_claim(claim)
+        ]
+
+    st.markdown("### 行动项")
+    if not claims:
+        st.info("暂无行动项。")
+        return
+
+    for index, claim in enumerate(claims, start=1):
+        st.markdown(
+            f"""
+            <div class="claim-box action-box">
+                <b>行动项 {index}</b>
+                &nbsp;|&nbsp; 负责人：{html_text(claim.get("speaker_id", "-"))}
+                &nbsp;|&nbsp; 支撑度：{html_text(claim.get("confidence", "-"))}
+                <br/><b>内容：</b>{html_text(
+                    claim.get("statement") or claim.get("summary", "")
+                )}
+                <br/><b>证据：</b>{html_text(
+                    ", ".join(claim.get("evidence_ids", []))
+                )}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_risks(result: dict):
+    claims = list(result.get("risks", []))
+    if not claims:
+        claims = [
+            claim for claim in result.get("claims", [])
+            if is_risk_claim(claim)
+        ]
+
+    st.markdown("### 风险项")
+    if not claims:
+        st.info("暂无风险项。")
+        return
+
+    for index, claim in enumerate(claims, start=1):
+        st.markdown(
+            f"""
+            <div class="claim-box risk-box">
+                <b>风险 {index}</b>
+                &nbsp;|&nbsp; 来源：{html_text(claim.get("speaker_id", "-"))}
+                &nbsp;|&nbsp; 支撑度：{html_text(claim.get("confidence", "-"))}
+                <br/><b>描述：</b>{html_text(
+                    claim.get("statement") or claim.get("summary", "")
+                )}
+                <br/><b>证据：</b>{html_text(
+                    ", ".join(claim.get("evidence_ids", []))
+                )}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_evidence_chain(result: dict):
+    evidence = result.get("evidence_links") or []
+
+    st.markdown("### 证据链")
+    if not evidence:
+        st.info("暂无证据链。")
+        return
+
+    st.dataframe(
+        [
+            {
+                "证据ID": item.get("evidence_id", "-"),
+                "发言人": item.get("speaker_id", "-"),
+                "时间": (
+                    f"{item.get('start_ms', 0)}ms - "
+                    f"{item.get('end_ms', 0)}ms"
+                ),
+                "原话": item.get("quote") or item.get("text", ""),
+                "ASR置信度": item.get("asr_confidence", "-"),
+                "声纹置信度": item.get("speaker_confidence", "-"),
+                "来源": item.get("speaker_source", "unknown"),
+            }
+            for item in evidence
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_result_metrics(result: dict):
+    claims = result.get("claims") or []
+    action_items = result.get("action_items") or [
+        claim for claim in claims if is_action_claim(claim)
+    ]
+    risks = result.get("risks") or [
+        claim for claim in claims if is_risk_claim(claim)
+    ]
+    speakers = result.get("speaker_ids") or [
+        item.get("speaker_id")
+        for item in result.get("evidence_links", [])
+        if item.get("speaker_id")
+    ]
+
+    columns = st.columns(4)
+    metrics = [
+        ("发言人数", len(set(speakers))),
+        ("关键结论", len(claims) - len(action_items) - len(risks)),
+        ("行动项", len(action_items)),
+        ("风险项", len(risks)),
+    ]
+    for column, (label, value) in zip(columns, metrics):
+        with column:
+            st.metric(label, value)
 
 
 def render_transcript(result: dict):
@@ -652,12 +791,13 @@ def render_search_results():
         st.markdown(
             f"""
             <div class="claim-box">
-                <b>相似度：</b>{hit.get("score", "-")}<br/>
-                <b>类型：</b>{payload.get("kind", "-")}
+                <b>相似度：</b>{html_text(hit.get("score", "-"))}<br/>
+                <b>类型：</b>{html_text(payload.get("kind", "-"))}
                 &nbsp;|&nbsp;
-                <b>发言人：</b>{payload.get("speaker_id", "-")}<br/>
-                <b>时间：</b>{payload.get("start_ms", "-")} - {payload.get("end_ms", "-")} ms
-                <div class="quote-box">{payload.get("text", "")}</div>
+                <b>发言人：</b>{html_text(payload.get("speaker_id", "-"))}<br/>
+                <b>时间：</b>{html_text(payload.get("start_ms", "-"))}
+                - {html_text(payload.get("end_ms", "-"))} ms
+                <div class="quote-box">{html_text(payload.get("text", ""))}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -805,20 +945,34 @@ with right:
         st.session_state.meeting,
         st.session_state.job_status,
     )
-    render_search_results()
 
     result = st.session_state.analysis_result
 
     if result:
-        tab1, tab2, tab3 = st.tabs(["发言人贡献", "可追溯结论", "原始转写"])
+        render_result_metrics(result)
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "会议摘要",
+            "行动项",
+            "风险项",
+            "证据链",
+            "原始转写",
+        ])
 
         with tab1:
             render_speaker_summaries(result)
-
-        with tab2:
             render_claims(result)
 
+        with tab2:
+            render_action_items(result)
+
         with tab3:
+            render_risks(result)
+
+        with tab4:
+            render_evidence_chain(result)
+            render_search_results()
+
+        with tab5:
             render_transcript(result)
     else:
         st.info("完成会议分析后，这里会展示发言人贡献、关键结论和原始转写。")

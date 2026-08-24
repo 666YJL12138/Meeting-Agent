@@ -21,6 +21,7 @@ class MeetingState(TypedDict, total=False):
     speaker_summaries: List[Dict[str, Any]]
     evidence_links: List[Dict[str, Any]]
 
+    timings: Dict[str, float]
     status: str
     progress: int
     index_status: List[str]

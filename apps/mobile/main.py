@@ -43,6 +43,16 @@ def label_status(value: str) -> str:
     return STATUS_LABELS.get(value or "", value or "-")
 
 
+def is_action_claim(claim: dict) -> bool:
+    value = str(claim.get("claim_type") or "").lower()
+    return any(item in value for item in ("action", "待办", "行动", "任务"))
+
+
+def is_risk_claim(claim: dict) -> bool:
+    value = str(claim.get("claim_type") or "").lower()
+    return "risk" in value or "风险" in value
+
+
 def post_analyze(
     api_base: str,
     title: str,
@@ -188,6 +198,16 @@ def main(page: ft.Page):
     audio_text = ft.Text("请填写本地音频路径", size=12, color="#667085")
     debug_log = ft.Text("准备就绪", size=12, color="#175CD3")
     progress = ft.ProgressRing(visible=False)
+    progress_bar = ft.ProgressBar(
+        value=0,
+        visible=True,
+        color="#175CD3",
+        bgcolor="#D0D5DD",
+    )
+    metrics_row = ft.Row(
+        spacing=8,
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+    )
     search_query = ft.TextField(
         label="检索关键词",
         hint_text="例如：风险、预算、负责人",
@@ -195,6 +215,9 @@ def main(page: ft.Page):
 
     summary_list = ft.Column(spacing=10)
     claims_list = ft.Column(spacing=10)
+    action_list = ft.Column(spacing=10)
+    risk_list = ft.Column(spacing=10)
+    evidence_list = ft.Column(spacing=10)
     transcript_list = ft.Column(spacing=6)
     history_list = ft.Column(spacing=6)
     search_results = ft.Column(spacing=8)
@@ -260,9 +283,15 @@ def main(page: ft.Page):
     def render_empty_results():
         summary_list.controls.clear()
         claims_list.controls.clear()
+        action_list.controls.clear()
+        risk_list.controls.clear()
+        evidence_list.controls.clear()
         transcript_list.controls.clear()
         summary_list.controls.append(ft.Text("完成分析后展示发言人贡献。", color="#667085"))
         claims_list.controls.append(ft.Text("完成分析后展示可追溯结论。", color="#667085"))
+        action_list.controls.append(ft.Text("完成分析后展示行动项。", color="#667085"))
+        risk_list.controls.append(ft.Text("完成分析后展示风险项。", color="#667085"))
+        evidence_list.controls.append(ft.Text("完成分析后展示证据链。", color="#667085"))
         transcript_list.controls.append(ft.Text("完成分析后展示原始转写。", color="#667085"))
 
     def render_history(history: list[dict]):
@@ -336,6 +365,7 @@ def main(page: ft.Page):
         stage_value = current.get("stage", "-")
         status_value = current.get("status", "-")
 
+        progress_bar.value = progress_value / 100
         status_text.value = f"{progress_value}%  {stage_value}"
         audio_text.value = f"任务状态：{status_value}"
         render_history(state["history"])
@@ -417,6 +447,9 @@ def main(page: ft.Page):
     def render_result(result: dict):
         summary_list.controls.clear()
         claims_list.controls.clear()
+        action_list.controls.clear()
+        risk_list.controls.clear()
+        evidence_list.controls.clear()
         transcript_list.controls.clear()
 
         summaries = result.get("speaker_summaries", [])
@@ -449,10 +482,21 @@ def main(page: ft.Page):
             summary_list.controls.append(card(ft.Column(rows, spacing=8)))
 
         claims = result.get("claims", [])
-        if not claims:
+        action_items = result.get("action_items") or [
+            claim for claim in claims if is_action_claim(claim)
+        ]
+        risks = result.get("risks") or [
+            claim for claim in claims if is_risk_claim(claim)
+        ]
+        conclusions = [
+            claim for claim in claims
+            if claim not in action_items and claim not in risks
+        ]
+
+        if not conclusions:
             claims_list.controls.append(ft.Text("暂无可追溯结论。", color="#667085"))
 
-        for claim in claims:
+        for claim in conclusions:
             claims_list.controls.append(
                 card(
                     ft.Column(
@@ -482,6 +526,106 @@ def main(page: ft.Page):
                 )
             )
 
+        if not action_items:
+            action_list.controls.append(ft.Text("暂无行动项。", color="#667085"))
+        for index, claim in enumerate(action_items, start=1):
+            action_list.controls.append(
+                card(
+                    ft.Column(
+                        [
+                            ft.Text(
+                                f"行动项 {index} · {claim.get('speaker_id', '-')}",
+                                size=15,
+                                weight=ft.FontWeight.BOLD,
+                                color="#067647",
+                            ),
+                            ft.Text(
+                                claim.get("statement") or claim.get("summary", ""),
+                                size=13,
+                            ),
+                            ft.Text(
+                                f"证据：{', '.join(claim.get('evidence_ids', []))}\n"
+                                f"支撑度：{claim.get('confidence', '-')}",
+                                size=11,
+                                color="#667085",
+                            ),
+                        ],
+                        spacing=7,
+                    ),
+                    bgcolor="#ECFDF3",
+                )
+            )
+
+        if not risks:
+            risk_list.controls.append(ft.Text("暂无风险项。", color="#667085"))
+        for index, claim in enumerate(risks, start=1):
+            risk_list.controls.append(
+                card(
+                    ft.Column(
+                        [
+                            ft.Text(
+                                f"风险 {index} · {claim.get('speaker_id', '-')}",
+                                size=15,
+                                weight=ft.FontWeight.BOLD,
+                                color="#B42318",
+                            ),
+                            ft.Text(
+                                claim.get("statement") or claim.get("summary", ""),
+                                size=13,
+                            ),
+                            ft.Text(
+                                f"证据：{', '.join(claim.get('evidence_ids', []))}\n"
+                                f"支撑度：{claim.get('confidence', '-')}",
+                                size=11,
+                                color="#667085",
+                            ),
+                        ],
+                        spacing=7,
+                    ),
+                    bgcolor="#FEF3F2",
+                )
+            )
+
+        evidence = result.get("evidence_links", [])
+        if not evidence:
+            evidence_list.controls.append(ft.Text("暂无证据链。", color="#667085"))
+        for item in evidence:
+            evidence_list.controls.append(
+                card(
+                    ft.Column(
+                        [
+                            ft.Text(
+                                item.get("evidence_id", "-"),
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color="#175CD3",
+                            ),
+                            ft.Text(
+                                f"{item.get('speaker_id', '-')} · "
+                                f"{format_ms(item.get('start_ms'))}-"
+                                f"{format_ms(item.get('end_ms'))}",
+                                size=11,
+                                color="#667085",
+                            ),
+                            ft.Text(
+                                item.get("quote") or item.get("text", ""),
+                                size=13,
+                                color="#344054",
+                            ),
+                            ft.Text(
+                                f"ASR：{item.get('asr_confidence', '-')}"
+                                f" · 声纹：{item.get('speaker_confidence', '-')}"
+                                f" · 来源：{item.get('speaker_source', 'unknown')}",
+                                size=10,
+                                color="#667085",
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                    bgcolor="#F9FAFB",
+                )
+            )
+
         spans = result.get("transcript_spans", [])
         if not spans:
             transcript_list.controls.append(ft.Text("暂无原始转写。", color="#667085"))
@@ -497,9 +641,64 @@ def main(page: ft.Page):
                     ),
                     bgcolor="#FFFFFF",
                     padding=10,
+                    )
                 )
-            )
 
+        speaker_ids = result.get("speaker_ids") or [
+            item.get("speaker_id")
+            for item in evidence
+            if item.get("speaker_id")
+        ]
+        metrics_row.controls = [
+            card(
+                ft.Column(
+                    [
+                        ft.Text(str(len(set(speaker_ids))), size=19, weight=ft.FontWeight.BOLD, color="#175CD3"),
+                        ft.Text("发言人数", size=10, color="#667085"),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=2,
+                ),
+                bgcolor="#EAF2FF",
+                padding=9,
+            ),
+            card(
+                ft.Column(
+                    [
+                        ft.Text(str(len(conclusions)), size=19, weight=ft.FontWeight.BOLD, color="#175CD3"),
+                        ft.Text("关键结论", size=10, color="#667085"),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=2,
+                ),
+                bgcolor="#EAF2FF",
+                padding=9,
+            ),
+            card(
+                ft.Column(
+                    [
+                        ft.Text(str(len(action_items)), size=19, weight=ft.FontWeight.BOLD, color="#067647"),
+                        ft.Text("行动项", size=10, color="#667085"),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=2,
+                ),
+                bgcolor="#ECFDF3",
+                padding=9,
+            ),
+            card(
+                ft.Column(
+                    [
+                        ft.Text(str(len(risks)), size=19, weight=ft.FontWeight.BOLD, color="#B42318"),
+                        ft.Text("风险项", size=10, color="#667085"),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=2,
+                ),
+                bgcolor="#FEF3F2",
+                padding=9,
+            ),
+        ]
         page.update()
 
     def create_meeting(_):
@@ -833,11 +1032,13 @@ def main(page: ft.Page):
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
                 status_text,
+                progress_bar,
                 ft.Text("会议ID", size=11, color="#667085"),
                 meeting_id_text,
                 ft.Text("音频", size=11, color="#667085"),
                 audio_text,
                 debug_log,
+                metrics_row,
             ],
             spacing=8,
         ),
@@ -852,7 +1053,7 @@ def main(page: ft.Page):
                 title,
                 host,
                 participants,
-                ft.ElevatedButton("创建会议", on_click=create_meeting, width=360),
+                ft.ElevatedButton("创建会议", on_click=create_meeting, expand=True),
             ],
             spacing=10,
         )
@@ -879,11 +1080,21 @@ def main(page: ft.Page):
         ft.Column(
             [
                 section_title("3. 生成结果"),
-                ft.ElevatedButton("一键分析会议", on_click=run_analysis, width=360),
-                ft.OutlinedButton("刷新任务状态", on_click=refresh_job_status, width=360),
-                ft.OutlinedButton("继续等待分析", on_click=resume_job_polling, width=360),
-                ft.OutlinedButton("生成 PDF 报告", on_click=download_pdf, width=360),
-                ft.OutlinedButton("打开 PDF 报告", on_click=open_pdf_report, width=360),
+                ft.ElevatedButton("一键分析会议", on_click=run_analysis, expand=True),
+                ft.Row(
+                    [
+                        ft.OutlinedButton("刷新任务状态", on_click=refresh_job_status, expand=True),
+                        ft.OutlinedButton("继续等待分析", on_click=resume_job_polling, expand=True),
+                    ],
+                    spacing=8,
+                ),
+                ft.Row(
+                    [
+                        ft.OutlinedButton("生成 PDF 报告", on_click=download_pdf, expand=True),
+                        ft.OutlinedButton("打开 PDF 报告", on_click=open_pdf_report, expand=True),
+                    ],
+                    spacing=8,
+                ),
             ],
             spacing=10,
         )
@@ -897,7 +1108,7 @@ def main(page: ft.Page):
                 ft.ElevatedButton(
                     "搜索原话证据",
                     on_click=search_evidence,
-                    width=360,
+                    expand=True,
                 ),
                 search_results,
             ],
@@ -914,15 +1125,70 @@ def main(page: ft.Page):
                     form_card,
                     audio_card,
                     action_card,
-                    search_card,
                     section_title("任务历史"),
                     history_list,
-                    section_title("发言人贡献"),
-                    summary_list,
-                    section_title("可追溯结论"),
-                    claims_list,
-                    section_title("原始转写"),
-                    transcript_list,
+                    ft.Tabs(
+                        length=5,
+                        selected_index=0,
+                        animation_duration=200,
+                        content=ft.Column(
+                            [
+                                ft.TabBar(
+                                    tabs=[
+                                        ft.Tab(label="摘要"),
+                                        ft.Tab(label="行动项"),
+                                        ft.Tab(label="风险项"),
+                                        ft.Tab(label="证据链"),
+                                        ft.Tab(label="转写"),
+                                    ],
+                                    scrollable=True,
+                                ),
+                                ft.TabBarView(
+                                    expand=True,
+                                    controls=[
+                                        ft.Container(
+                                            content=ft.Column(
+                                                [summary_list, claims_list],
+                                                spacing=12,
+                                            ),
+                                            padding=ft.Padding(
+                                                top=10, right=0, bottom=0, left=0
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            content=action_list,
+                                            padding=ft.Padding(
+                                                top=10, right=0, bottom=0, left=0
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            content=risk_list,
+                                            padding=ft.Padding(
+                                                top=10, right=0, bottom=0, left=0
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            content=ft.Column(
+                                                [search_card, evidence_list],
+                                                spacing=12,
+                                            ),
+                                            padding=ft.Padding(
+                                                top=10, right=0, bottom=0, left=0
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            content=transcript_list,
+                                            padding=ft.Padding(
+                                                top=10, right=0, bottom=0, left=0
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                            ],
+                            expand=True,
+                        ),
+                        height=560,
+                    ),
                 ],
                 spacing=14,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,

@@ -30,3 +30,4 @@ class MeetingAgentState(TypedDict, total=False):
     email_delivery: dict | None
 
     errors: list[str]
+    timings: dict[str, float]

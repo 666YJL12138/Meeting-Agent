@@ -1,3 +1,10 @@
+import os
+
+from services.artifact_cache import (
+    build_cache_key,
+    load_cache,
+    save_cache,
+)
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +21,60 @@ MODEL_PATH = r"D:\futurework\Meeting-Agent\Meeting-Agent\models\faster-whisper-t
 SIMPLIFIER = OpenCC("t2s") if OpenCC else None
 
 
+def get_asr_runtime_config() -> dict:
+    """Choose the fastest supported local runtime without changing ASR quality."""
+    configured_device = os.getenv("ASR_DEVICE", "").strip().lower()
+
+    if configured_device:
+        device = configured_device
+    else:
+        try:
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            device = "cpu"
+
+    configured_compute_type = os.getenv(
+        "ASR_COMPUTE_TYPE",
+        "",
+    ).strip()
+
+    if configured_compute_type:
+        compute_type = configured_compute_type
+    else:
+        compute_type = "float16" if device == "cuda" else "int8"
+
+    default_threads = max(
+        1,
+        (os.cpu_count() or 4) - 2,
+    )
+    cpu_threads_value = os.getenv(
+        "ASR_CPU_THREADS",
+        "",
+    ).strip()
+    num_workers_value = os.getenv(
+        "ASR_NUM_WORKERS",
+        "1",
+    ).strip()
+
+    cpu_threads = max(
+        1,
+        int(cpu_threads_value or default_threads),
+    )
+    num_workers = max(
+        1,
+        int(num_workers_value or "1"),
+    )
+
+    return {
+        "device": device,
+        "compute_type": compute_type,
+        "cpu_threads": cpu_threads,
+        "num_workers": num_workers,
+    }
+
+
 @lru_cache(maxsize=1)
 def get_asr_model():
     model_path = Path(MODEL_PATH)
@@ -21,14 +82,60 @@ def get_asr_model():
     if not model_path.exists():
         raise FileNotFoundError(f"ASR model path does not exist: {model_path}")
 
+    runtime = get_asr_runtime_config()
+
+    print(
+        "[asr] loading model "
+        f"device={runtime['device']} "
+        f"compute_type={runtime['compute_type']} "
+        f"cpu_threads={runtime['cpu_threads']} "
+        f"num_workers={runtime['num_workers']}",
+        flush=True,
+    )
+
     return WhisperModel(
         str(model_path),
-        device="cpu",
-        compute_type="int8",
+        device=runtime["device"],
+        compute_type=runtime["compute_type"],
+        cpu_threads=runtime["cpu_threads"],
+        num_workers=runtime["num_workers"],
     )
 
 
-def transcribe_audio(wav_path: str, meeting_id: str) -> list[dict]:
+def transcribe_audio(
+    wav_path: str,
+    meeting_id: str,
+) -> list[dict]:
+    cache_config = {
+        "model_path": MODEL_PATH,
+        "language": "zh",
+        "beam_size": 5,
+        "vad_filter": True,
+        **get_asr_runtime_config(),
+    }
+
+    cache_key = build_cache_key(
+        wav_path,
+        "asr",
+        cache_config,
+    )
+
+    cached = load_cache("asr", cache_key)
+
+    if cached:
+        cached_spans = cached.get("transcript_spans", [])
+
+        return reindex_spans(
+            [
+                {
+                    **item,
+                    "meeting_id": meeting_id,
+                }
+                for item in cached_spans
+            ],
+            meeting_id,
+        )
+
     model = get_asr_model()
 
     segments, info = model.transcribe(
@@ -36,14 +143,22 @@ def transcribe_audio(wav_path: str, meeting_id: str) -> list[dict]:
         language="zh",
         task="transcribe",
         vad_filter=True,
+
+        # 保留原有精度配置
         beam_size=5,
-        initial_prompt="以下是普通话会议录音，请使用简体中文输出，不要使用繁体字。",
+
+        initial_prompt=(
+            "以下是普通话会议录音，"
+            "请使用简体中文输出，"
+            "不要使用繁体字。"
+        ),
     )
 
     spans = []
 
     for index, segment in enumerate(segments, start=1):
         text = normalize_text(segment.text.strip())
+
         if not text:
             continue
 
@@ -60,7 +175,18 @@ def transcribe_audio(wav_path: str, meeting_id: str) -> list[dict]:
 
         spans.extend(split_long_span(span))
 
-    return reindex_spans(spans, meeting_id)
+    result = reindex_spans(spans, meeting_id)
+
+    save_cache(
+        "asr",
+        cache_key,
+        {
+            "transcript_spans": result,
+            "model_config": cache_config,
+        },
+    )
+
+    return result
 
 
 def normalize_text(text: str) -> str:

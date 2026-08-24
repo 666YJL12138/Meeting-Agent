@@ -1,5 +1,5 @@
 from langgraph.graph import END, START, StateGraph
-
+from services.performance import measure_stage
 from .state import MeetingState
 from services.asr import transcribe_audio
 from services.audio import (
@@ -89,10 +89,11 @@ def asr_node(state: MeetingState) -> MeetingState:
         stage="faster-whisper 语音识别",
     )
 
-    spans = transcribe_audio(
-        wav_path=state["normalized_audio_uri"],
-        meeting_id=state["meeting_id"],
-    )
+    with measure_stage(state, "asr"):
+        spans = transcribe_audio(
+            wav_path=state["normalized_audio_uri"],
+            meeting_id=state["meeting_id"],
+        )
 
     update_job_progress(
         state,
@@ -103,6 +104,7 @@ def asr_node(state: MeetingState) -> MeetingState:
 
     return {
         "transcript_spans": spans,
+        "timings": state.get("timings", {}),
         "progress": 70,
         "status": "asr_done",
     }
@@ -123,32 +125,27 @@ def diarization_node(state: MeetingState) -> MeetingState:
         else None
     )
 
-    speaker_segments = diarize_audio(
-        wav_path=state["normalized_audio_uri"],
-        voice_segments=state.get("voice_segments", []),
-        min_speakers=expected_speakers,
-        max_speakers=expected_speakers,
-    )
+    with measure_stage(state, "diarization"):
+        speaker_segments = diarize_audio(
+            wav_path=state["normalized_audio_uri"],
+            voice_segments=state.get("voice_segments", []),
+            min_speakers=expected_speakers,
+            max_speakers=expected_speakers,
+        )
 
-    assigned_spans = assign_speakers_to_spans(
-        transcript_spans=state.get("transcript_spans", []),
-        speaker_segments=speaker_segments,
-        min_confidence=0.2,
-    )
+        assigned_spans = assign_speakers_to_spans(
+            transcript_spans=state.get("transcript_spans", []),
+            speaker_segments=speaker_segments,
+            min_confidence=0.2,
+        )
 
     speakers = build_speakers(speaker_segments)
-
-    update_job_progress(
-        state,
-        status="diarization_processing",
-        progress=62,
-        stage="说话人归因完成",
-    )
 
     return {
         "speaker_segments": speaker_segments,
         "transcript_spans": assigned_spans,
         "speakers": speakers,
+        "timings": state.get("timings", {}),
         "progress": 82,
         "status": "diarization_done",
     }
@@ -323,6 +320,7 @@ def run_audio_asr_graph(meeting: dict) -> dict:
         "participants": meeting.get("participants", []),
         "status": "processing",
         "progress": 10,
+        "timings": {},
         "errors": [],
         "transcript_spans": [],
         "speakers": [],

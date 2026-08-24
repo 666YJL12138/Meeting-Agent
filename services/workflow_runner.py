@@ -235,6 +235,7 @@ def run_full_workflow(
             "claims": len(
                 result.get("claims", [])
             ),
+            "timings": asr_state.get("timings", {}),
             "contributions": len(
                 result.get(
                     "contributions",
