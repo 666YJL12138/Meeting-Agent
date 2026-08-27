@@ -31,5 +31,7 @@ class MeetingAgentState(TypedDict, total=False):
     email_body: str | None
     email_delivery: dict | None
 
+    compact_evidence_json: str
+    agent_cache_hit: bool
     errors: list[str]
     timings: dict[str, float]

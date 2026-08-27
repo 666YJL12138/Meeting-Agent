@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from functools import lru_cache
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -15,17 +16,32 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+@lru_cache(maxsize=8)
+def _build_client(
+    base_url: str,
+    api_key: str,
+    timeout: float,
+) -> OpenAI:
+    """Reuse one HTTP client per endpoint within the API process."""
+    return OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )
+
+
 class LLMGateway:
     def __init__(self):
-        self.client = OpenAI(
-            base_url=os.getenv(
-                "LLM_BASE_URL",
-                "http://127.0.0.1:11434/v1",
-            ),
-            api_key=os.getenv("LLM_API_KEY", "ollama"),
-            timeout=float(
-                os.getenv("LLM_TIMEOUT_SECONDS", "900")
-            ),
+        self.base_url = os.getenv(
+            "LLM_BASE_URL",
+            "http://127.0.0.1:11434/v1",
+        )
+        self.api_key = os.getenv("LLM_API_KEY", "ollama")
+        self.timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "900"))
+        self.client = _build_client(
+            self.base_url,
+            self.api_key,
+            self.timeout,
         )
 
         self.model = os.getenv("LLM_MODEL", "glm4")
@@ -38,6 +54,15 @@ class LLMGateway:
 
         self.use_json_format = os.getenv(
             "LLM_USE_JSON_FORMAT",
+            "1",
+        ) == "1"
+        self.keep_alive = os.getenv("LLM_KEEP_ALIVE", "10m")
+        self.num_ctx = int(os.getenv("LLM_NUM_CTX", "4096"))
+        self.num_predict = int(
+            os.getenv("LLM_NUM_PREDICT", str(self.max_tokens))
+        )
+        self.use_ollama_options = os.getenv(
+            "LLM_USE_OLLAMA_OPTIONS",
             "1",
         ) == "1"
 
@@ -194,6 +219,15 @@ class LLMGateway:
         if self.use_json_format:
             request["response_format"] = {
                 "type": "json_object"
+            }
+
+        if self.use_ollama_options:
+            request["extra_body"] = {
+                "keep_alive": self.keep_alive,
+                "options": {
+                    "num_ctx": self.num_ctx,
+                    "num_predict": self.num_predict,
+                },
             }
 
         response = self.client.chat.completions.create(

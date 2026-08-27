@@ -16,3 +16,13 @@ def measure_stage(state: dict, stage_name: str):
         elapsed_seconds = perf_counter() - started_at
         timings = state.setdefault("timings", {})
         timings[stage_name] = round(elapsed_seconds, 3)
+
+
+def record_timing(
+    state: dict,
+    stage_name: str,
+    elapsed_seconds: float,
+) -> None:
+    """Record a timing supplied by a worker thread."""
+    timings = state.setdefault("timings", {})
+    timings[stage_name] = round(elapsed_seconds, 3)

@@ -217,6 +217,7 @@ def run_full_workflow(
             "to_email": meeting.get(
                 "to_email"
             ),
+            "timings": {},
             "errors": [],
         }
 
@@ -247,7 +248,8 @@ def run_full_workflow(
             "claims": len(
                 result.get("claims", [])
             ),
-            "timings": asr_state.get("timings", {}),
+            "timings": result.get("timings", {}),
+            "agent_cache_hit": result.get("agent_cache_hit", False),
             "contributions": len(
                 result.get(
                     "contributions",

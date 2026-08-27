@@ -39,6 +39,27 @@ def build_cache_key(
     return hashlib.sha256(raw).hexdigest()
 
 
+def build_agent_cache_key(
+    meeting_id: str,
+    evidence: list[dict],
+    config: dict,
+) -> str:
+    """Build a stable key from the exact evidence and LLM configuration."""
+    payload = {
+        "meeting_id": meeting_id,
+        "namespace": "agent",
+        "evidence": evidence,
+        "config": config,
+    }
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def cache_path(namespace: str, key: str) -> Path:
     directory = CACHE_ROOT / namespace
     directory.mkdir(parents=True, exist_ok=True)

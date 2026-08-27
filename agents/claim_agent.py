@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -11,6 +12,35 @@ from llm.schemas import AgentClaim
 
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _load_prompt() -> dict:
+    prompt_path = Path("prompts/claim_extraction.yaml")
+    return yaml.safe_load(prompt_path.read_text(encoding="utf-8"))
+
+
+def build_compact_evidence(
+    evidence: list[dict],
+    *,
+    max_items: int | None = None,
+    max_chars: int | None = None,
+) -> str:
+    """Prepare one bounded, reusable evidence JSON payload for all agents."""
+    max_items = max_items or int(os.getenv("LLM_MAX_EVIDENCE_ITEMS", "12"))
+    max_chars = max_chars or int(os.getenv("LLM_MAX_EVIDENCE_CHARS", "160"))
+
+    compact_evidence = []
+    for item in evidence[:max_items]:
+        compact_item = dict(item)
+        compact_item["text"] = compact_item.get("text", "")[:max_chars]
+        compact_evidence.append(compact_item)
+
+    return json.dumps(
+        compact_evidence,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _repair_mojibake(value):
@@ -34,21 +64,25 @@ class ClaimAgent:
         self.llm = LLMGateway()
         self.max_evidence_items = int(os.getenv("LLM_MAX_EVIDENCE_ITEMS", "12"))
         self.max_evidence_chars = int(os.getenv("LLM_MAX_EVIDENCE_CHARS", "160"))
-        prompt_path = Path("prompts/claim_extraction.yaml")
-        self.prompt = yaml.safe_load(prompt_path.read_text(encoding="utf-8"))
+        self.prompt = _load_prompt()
 
-    def run(self, meeting_id: str, evidence: list[dict]) -> list[AgentClaim]:
-        compact_evidence = []
-        for item in evidence[: self.max_evidence_items]:
-            compact_item = dict(item)
-            compact_item["text"] = compact_item.get("text", "")[: self.max_evidence_chars]
-            compact_evidence.append(compact_item)
+    def run(
+        self,
+        meeting_id: str,
+        evidence: list[dict],
+        compact_evidence_json: str | None = None,
+    ) -> list[AgentClaim]:
+        compact_evidence_json = compact_evidence_json or build_compact_evidence(
+            evidence,
+            max_items=self.max_evidence_items,
+            max_chars=self.max_evidence_chars,
+        )
 
         user_prompt = self.prompt["user_template"].format(
             meeting_id=meeting_id,
             task_type=self.task_type,
             claim_type=self.claim_type,
-            evidence_json=json.dumps(compact_evidence, ensure_ascii=False, indent=2),
+            evidence_json=compact_evidence_json,
         )
         result = self.llm.chat_json(self.prompt["system"], user_prompt)
         raw_claims = result.get("claims", [])

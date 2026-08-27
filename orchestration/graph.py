@@ -1,15 +1,22 @@
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from inspect import signature
+from time import perf_counter
 
 from langgraph.graph import StateGraph, START, END
 
-from agents.claim_agent import ClaimAgent
+from agents.claim_agent import ClaimAgent, build_compact_evidence
 from agents.critic_agent import CriticAgent
 from agents.notification_agent import NotificationAgent
 from agents.rag_agent import RAGAgent
 from agents.report_agent import ReportAgent
 from llm.schemas import AgentClaim
 from orchestration.state import MeetingAgentState
+from services.artifact_cache import (
+    build_agent_cache_key,
+    load_cache,
+    save_cache,
+)
 from services.performance import measure_stage
 
 
@@ -110,18 +117,35 @@ def _fallback_for_task(
 def _run_claim_task(
     state: MeetingAgentState,
     key: str,
-) -> tuple[str, list[dict], str | None]:
+) -> tuple[str, list[dict], str | None, float]:
     task_type, claim_type = CLAIM_TASKS[key]
+    started_at = perf_counter()
 
     try:
         agent = ClaimAgent(task_type, claim_type)
-        claims = agent.run(state["meeting_id"], state["evidence"])
-        return key, [item.model_dump() for item in claims], None
+        run_parameters = signature(agent.run).parameters
+        if "compact_evidence_json" in run_parameters:
+            claims = agent.run(
+                state["meeting_id"],
+                state["evidence"],
+                compact_evidence_json=state.get("compact_evidence_json"),
+            )
+        else:
+            # Keep compatibility with older test doubles and custom agents.
+            claims = agent.run(state["meeting_id"], state["evidence"])
+
+        return (
+            key,
+            [item.model_dump() for item in claims],
+            None,
+            perf_counter() - started_at,
+        )
     except Exception as exc:
         return (
             key,
             _fallback_for_task(state, key),
             f"{key} failed: {exc}",
+            perf_counter() - started_at,
         )
 
 
@@ -129,8 +153,12 @@ def _apply_claim_task(
     state: MeetingAgentState,
     key: str,
 ) -> MeetingAgentState:
-    result_key, claims, error = _run_claim_task(state, key)
+    result_key, claims, error, elapsed = _run_claim_task(state, key)
     state[result_key] = claims
+    state.setdefault("timings", {})[f"agent_{result_key}"] = round(
+        elapsed,
+        3,
+    )
     if error:
         state.setdefault("errors", []).append(error)
     return state
@@ -156,6 +184,51 @@ def extract_all_claims(
     max_workers = max(1, min(len(CLAIM_TASKS), max_workers))
     results = {}
     errors = []
+    timings = state.setdefault("timings", {})
+    cache_enabled = os.getenv("AGENT_CACHE_ENABLED", "1") == "1"
+    cache_config = {
+        "model": os.getenv("LLM_MODEL", "glm4"),
+        "prompt_version": "claim_extraction_v1",
+        "max_evidence_items": int(
+            os.getenv("LLM_MAX_EVIDENCE_ITEMS", "12")
+        ),
+        "max_evidence_chars": int(
+            os.getenv("LLM_MAX_EVIDENCE_CHARS", "160")
+        ),
+        "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "1536")),
+        "num_ctx": int(os.getenv("LLM_NUM_CTX", "4096")),
+        "num_predict": int(
+            os.getenv(
+                "LLM_NUM_PREDICT",
+                os.getenv("LLM_MAX_TOKENS", "1536"),
+            )
+        ),
+    }
+    cache_key = build_agent_cache_key(
+        state["meeting_id"],
+        state.get("evidence", []),
+        cache_config,
+    )
+
+    if cache_enabled:
+        cached = load_cache("agent", cache_key)
+        if cached:
+            for key in CLAIM_TASKS:
+                state[key] = cached.get(key, [])
+            state["agent_cache_hit"] = True
+            timings["agent_cache_lookup"] = 0.0
+            timings["agent_claim_extraction"] = 0.0
+            for key in CLAIM_TASKS:
+                timings[f"agent_{key}"] = cached.get(
+                    "timings",
+                    {},
+                ).get(key, 0.0)
+            return state
+
+    state["agent_cache_hit"] = False
+    state["compact_evidence_json"] = build_compact_evidence(
+        state.get("evidence", [])
+    )
 
     with measure_stage(state, "agent_claim_extraction"):
         with ThreadPoolExecutor(
@@ -174,13 +247,15 @@ def extract_all_claims(
             for future in as_completed(futures):
                 key = futures[future]
                 try:
-                    result_key, claims, error = future.result()
+                    result_key, claims, error, elapsed = future.result()
                 except Exception as exc:
                     result_key = key
                     claims = _fallback_for_task(state, key)
                     error = f"{key} failed: {exc}"
+                    elapsed = 0.0
 
                 results[result_key] = claims
+                timings[f"agent_{result_key}"] = round(elapsed, 3)
                 if error:
                     errors.append(error)
 
@@ -188,6 +263,18 @@ def extract_all_claims(
         state[key] = results.get(key, [])
 
     state.setdefault("errors", []).extend(errors)
+    if cache_enabled and not errors:
+        save_cache(
+            "agent",
+            cache_key,
+            {
+                **{key: state[key] for key in CLAIM_TASKS},
+                "timings": {
+                    key: timings.get(f"agent_{key}", 0.0)
+                    for key in CLAIM_TASKS
+                },
+            },
+        )
     return state
 
 
