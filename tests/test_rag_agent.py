@@ -2,6 +2,7 @@ import threading
 import time
 
 from agents.rag_agent import RAGAgent
+from services.vector_store import evidence_hash, rerank_hits
 
 
 def test_rag_enrich_claims_runs_searches_concurrently_and_keeps_order(monkeypatch):
@@ -62,3 +63,74 @@ def test_rag_keeps_local_fallback_when_vector_search_fails(monkeypatch):
 
     assert result[0]["hits"][0]["source"] == "local"
     assert result[0]["hits"][0]["payload"]["evidence_id"] == "ev_001"
+
+
+def test_rag_local_fallback_preserves_speaker_and_time_filters(monkeypatch):
+    monkeypatch.setattr(
+        "agents.rag_agent.search_meeting",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("qdrant unavailable")
+        ),
+    )
+
+    result = RAGAgent(top_k=5, max_workers=1).enrich_claims(
+        meeting_id="meeting_001",
+        claims=[{
+            "summary": "预算风险",
+            "claim_type": "风险",
+            "speaker_id": "speaker_01",
+            "start_ms": 1000,
+            "end_ms": 2000,
+        }],
+        evidence=[
+            {
+                "evidence_id": "ev-wrong-speaker",
+                "speaker_id": "speaker_00",
+                "text": "预算风险需要确认",
+                "start_ms": 1000,
+                "end_ms": 2000,
+            },
+            {
+                "evidence_id": "ev-wrong-time",
+                "speaker_id": "speaker_01",
+                "text": "预算风险需要确认",
+                "start_ms": 3000,
+                "end_ms": 4000,
+            },
+            {
+                "evidence_id": "ev-match",
+                "speaker_id": "speaker_01",
+                "text": "预算风险需要确认",
+                "start_ms": 1200,
+                "end_ms": 1800,
+            },
+        ],
+    )
+
+    assert [
+        hit["payload"]["evidence_id"]
+        for hit in result[0]["hits"]
+    ] == ["ev-match"]
+
+
+def test_evidence_hash_is_stable_and_rerank_prefers_lexical_match():
+    payload = {
+        "speaker_id": "speaker_00",
+        "start_ms": 0,
+        "end_ms": 1000,
+        "text": "预算风险需要确认",
+    }
+    assert evidence_hash("meeting_001", "transcript", "span_1", payload) == (
+        evidence_hash("meeting_001", "transcript", "span_1", payload)
+    )
+
+    ranked = rerank_hits(
+        "预算风险",
+        [
+            {"score": 0.95, "payload": {"evidence_id": "generic", "text": "项目进度很顺利"}},
+            {"score": 0.20, "payload": {"evidence_id": "match", "text": "预算风险需要确认"}},
+        ],
+        limit=2,
+    )
+    assert ranked[0]["payload"]["evidence_id"] == "match"
+    assert ranked[0]["rerank_score"] > ranked[1]["rerank_score"]

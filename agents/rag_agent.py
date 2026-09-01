@@ -34,6 +34,7 @@ class RAGAgent:
                 meeting_id=meeting_id,
                 query=query,
                 evidence=evidence,
+                claim=claim,
             )
 
             return {
@@ -62,18 +63,41 @@ class RAGAgent:
         meeting_id: str,
         query: str,
         evidence: list[dict],
+        claim: dict | None = None,
     ) -> list[dict]:
+        claim = claim or {}
+        filters = {
+            key: claim.get(key)
+            for key in ("speaker_id", "start_ms", "end_ms", "topic")
+            if claim.get(key) is not None
+        }
         try:
-            vector_hits = search_meeting(
-                meeting_id=meeting_id,
-                query=query,
-                limit=self.top_k,
-            )
+            if filters:
+                try:
+                    vector_hits = search_meeting(
+                        meeting_id=meeting_id,
+                        query=query,
+                        limit=self.top_k,
+                        **filters,
+                    )
+                except TypeError:
+                    vector_hits = search_meeting(
+                        meeting_id=meeting_id,
+                        query=query,
+                        limit=self.top_k,
+                    )
+            else:
+                vector_hits = search_meeting(
+                    meeting_id=meeting_id,
+                    query=query,
+                    limit=self.top_k,
+                )
             if vector_hits:
                 return [
                     {
                         "source": "qdrant",
                         "score": item.get("score"),
+                        "rerank_score": item.get("rerank_score"),
                         "payload": item.get("payload", {}),
                     }
                     for item in vector_hits
@@ -81,17 +105,35 @@ class RAGAgent:
         except Exception:
             pass
 
-        return self._local_keyword_search(query=query, evidence=evidence)
+        return self._local_keyword_search(
+            query=query,
+            evidence=evidence,
+            claim=claim,
+        )
 
     def _local_keyword_search(
         self,
         query: str,
         evidence: list[dict],
+        claim: dict | None = None,
     ) -> list[dict]:
+        claim = claim or {}
         tokens = [char for char in query if char.strip()]
         hits = []
 
         for item in evidence:
+            if claim.get("speaker_id") and (
+                claim["speaker_id"] != item.get("speaker_id")
+            ):
+                continue
+            if claim.get("start_ms") is not None and (
+                int(item.get("end_ms", 0)) < int(claim["start_ms"])
+            ):
+                continue
+            if claim.get("end_ms") is not None and (
+                int(item.get("start_ms", 0)) > int(claim["end_ms"])
+            ):
+                continue
             text = item.get("text", "")
             score = sum(1 for token in tokens if token in text)
 

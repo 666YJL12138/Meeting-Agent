@@ -20,10 +20,16 @@ def build_quality_report(result: dict) -> dict:
             for source in sources
         )
 
-        if not has_evidence or not quote_matches:
+        support_status = claim.get("support_status", "supported")
+        review_reason = claim.get("review_reason")
+        if not has_evidence or not quote_matches or support_status != "supported":
             invalid_claims.append({
-                "claim_id": claim["claim_id"],
-                "reason": "missing_evidence" if not has_evidence else "quote_mismatch",
+                "claim_id": claim.get("claim_id"),
+                "reason": (
+                    review_reason
+                    or ("missing_evidence" if not has_evidence else "quote_mismatch")
+                ),
+                "support_status": support_status,
             })
 
     total = len(claims)

@@ -1,4 +1,6 @@
 import os
+import hashlib
+import re
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from qdrant_client import QdrantClient, models
@@ -44,11 +46,18 @@ def _records(
     for span in transcript_spans:
         text = str(span.get("text", "")).strip()
         if text:
+            source_id = span.get("span_id") or text
             records.append({
                 "kind": "transcript",
                 "text": text,
                 "payload": {
                     "meeting_id": meeting_id,
+                    "evidence_hash": evidence_hash(
+                        meeting_id,
+                        "transcript",
+                        source_id,
+                        span,
+                    ),
                     **span,
                 },
             })
@@ -56,16 +65,91 @@ def _records(
     for claim in claims:
         text = str(claim.get("statement", "")).strip()
         if text:
+            source_id = claim.get("claim_id") or text
             records.append({
                 "kind": "claim",
                 "text": text,
                 "payload": {
                     "meeting_id": meeting_id,
+                    "evidence_hash": evidence_hash(
+                        meeting_id,
+                        "claim",
+                        source_id,
+                        claim,
+                    ),
                     **claim,
                 },
             })
 
     return records
+
+
+def evidence_hash(
+    meeting_id: str,
+    kind: str,
+    source_id: str,
+    payload: dict,
+) -> str:
+    raw = "|".join([
+        str(meeting_id),
+        str(kind),
+        str(source_id),
+        str(payload.get("speaker_id", "")),
+        str(payload.get("start_ms", "")),
+        str(payload.get("end_ms", "")),
+        str(payload.get("text") or payload.get("statement") or ""),
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _query_tokens(query: str) -> set[str]:
+    return {
+        token.lower()
+        for token in re.findall(r"[\w\u4e00-\u9fff]+", str(query))
+        if token.strip()
+    }
+
+
+def rerank_hits(
+    query: str,
+    hits: list[dict],
+    *,
+    limit: int,
+) -> list[dict]:
+    """Apply a deterministic lexical rerank on top of vector similarity."""
+    query_text = re.sub(r"\s+", "", str(query))
+    query_tokens = _query_tokens(query)
+    ranked = []
+    for item in hits:
+        payload = item.get("payload") or {}
+        text = str(payload.get("text") or payload.get("statement") or "")
+        text_compact = re.sub(r"\s+", "", text)
+        text_tokens = _query_tokens(text)
+        if query_text and query_text in text_compact:
+            lexical_score = 1.0
+        elif text_compact and text_compact in query_text:
+            lexical_score = round(len(text_compact) / max(len(query_text), 1), 4)
+        else:
+            lexical_score = (
+                len(query_tokens & text_tokens) / len(query_tokens)
+                if query_tokens
+                else 0.0
+            )
+        vector_score = float(item.get("score") or 0.0)
+        rerank_score = round(0.55 * vector_score + 0.45 * lexical_score, 4)
+        ranked.append({
+            **item,
+            "rerank_score": rerank_score,
+        })
+
+    ranked.sort(
+        key=lambda item: (
+            -float(item.get("rerank_score") or 0.0),
+            -float(item.get("score") or 0.0),
+            str((item.get("payload") or {}).get("evidence_id", "")),
+        )
+    )
+    return ranked[:limit]
 
 
 def index_meeting(
@@ -117,19 +201,51 @@ def search_meeting(
     meeting_id: str,
     query: str,
     limit: int = 5,
+    speaker_id: str | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    topic: str | None = None,
 ) -> list[dict]:
     query_vector = embed_texts([query])[0]
     client = get_qdrant_client()
     ensure_collection(client)
 
-    meeting_filter = models.Filter(
-        must=[
+    conditions = [
+        models.FieldCondition(
+            key="meeting_id",
+            match=models.MatchValue(value=meeting_id),
+        )
+    ]
+    if speaker_id:
+        conditions.append(
             models.FieldCondition(
-                key="meeting_id",
-                match=models.MatchValue(value=meeting_id),
+                key="speaker_id",
+                match=models.MatchValue(value=speaker_id),
             )
-        ]
-    )
+        )
+    if start_ms is not None:
+        conditions.append(
+            models.FieldCondition(
+                key="end_ms",
+                range=models.Range(gte=start_ms),
+            )
+        )
+    if end_ms is not None:
+        conditions.append(
+            models.FieldCondition(
+                key="start_ms",
+                range=models.Range(lte=end_ms),
+            )
+        )
+    if topic:
+        conditions.append(
+            models.FieldCondition(
+                key="topic",
+                match=models.MatchValue(value=topic),
+            )
+        )
+
+    meeting_filter = models.Filter(must=conditions)
 
     if hasattr(client, "query_points"):
         result = client.query_points(
@@ -149,10 +265,11 @@ def search_meeting(
             with_payload=True,
         )
 
-    return [
+    formatted = [
         {
             "score": round(float(hit.score), 4),
             "payload": hit.payload or {},
         }
         for hit in hits
     ]
+    return rerank_hits(query, formatted, limit=limit)
