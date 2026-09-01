@@ -5,6 +5,7 @@ import json
 import shutil
 from fastapi.responses import FileResponse
 from services.pdf_report import generate_meeting_pdf
+from services.diarization_metrics import evaluate_diarization_metrics
 from services.meeting_defaults import (
     DEFAULT_MEETING_HOST,
     DEFAULT_MEETING_LANGUAGE,
@@ -14,6 +15,8 @@ from services.meeting_defaults import (
 )
 from .schemas import (
     ClaimReviewIn,
+    DiarizationEvaluationIn,
+    DiarizationEvaluationOut,
     DiarizationDebugOut,
     JobHistoryOut,
     JobStatusOut,
@@ -43,6 +46,28 @@ AUDIO_DIR = Path("data/audio")
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR = Path("outputs/asr")
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
+AGENT_RESULT_DIR = Path("outputs/agent")
+AGENT_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _numeric_confidence(value, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _speaker_ids_for_span(span: dict) -> list[str]:
+    values = span.get("speaker_ids")
+    if not isinstance(values, list):
+        values = [span.get("speaker_id", "speaker_unknown")]
+
+    speaker_ids = []
+    for value in values:
+        speaker_id = str(value or "").strip()
+        if speaker_id and speaker_id not in speaker_ids:
+            speaker_ids.append(speaker_id)
+    return speaker_ids or ["speaker_unknown"]
 
 
 class SendReportEmailRequest(BaseModel):
@@ -82,6 +107,19 @@ def save_asr_artifacts(meeting_id: str, state: dict) -> dict:
         "voice_segments": state.get("voice_segments", []),
         "speakers": state.get("speakers", []),
         "speaker_segments": state.get("speaker_segments", []),
+        "exclusive_speaker_segments": state.get(
+            "exclusive_speaker_segments",
+            [],
+        ),
+        "overlap_segments": state.get("overlap_segments", []),
+        "diarization_metrics": state.get(
+            "diarization_metrics",
+            {},
+        ),
+        "diarization_evaluation": state.get(
+            "diarization_evaluation",
+            {},
+        ),
         "speaker_mapping": state.get("speaker_mapping", {}),
         "speaker_name_map": state.get("speaker_name_map", {}),
         "transcript_spans": state.get("transcript_spans", []),
@@ -128,6 +166,23 @@ def save_agent_result(meeting_id: str, result: dict) -> str:
 
 
 def restore_meeting_from_cache(meeting_id: str) -> dict | None:
+    if meeting_id in STORE:
+        return STORE[meeting_id]
+
+    cached = load_cached_meeting_state(meeting_id)
+    if cached:
+        STORE[meeting_id] = cached
+        return cached
+
+    return None
+
+
+def load_meeting_result_for_quality(meeting_id: str) -> dict | None:
+    """Prefer the final agent workflow result when building quality reports."""
+    path = AGENT_RESULT_DIR / f"{meeting_id}.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+
     if meeting_id in STORE:
         return STORE[meeting_id]
 
@@ -258,6 +313,62 @@ def get_diarization_result(meeting_id: str):
         "speaker_source": source,
         "speakers": item.get("speakers", []),
         "speaker_segments": speaker_segments,
+        "exclusive_speaker_segments": item.get(
+            "exclusive_speaker_segments",
+            [],
+        ),
+        "overlap_segments": item.get("overlap_segments", []),
+        "diarization_metrics": item.get(
+            "diarization_metrics",
+            {},
+        ),
+        "diarization_evaluation": item.get(
+            "diarization_evaluation",
+            {},
+        ),
+    }
+
+
+@app.post(
+    "/meetings/{meeting_id}/diarization/evaluate",
+    response_model=DiarizationEvaluationOut,
+)
+def evaluate_diarization_for_meeting(
+    meeting_id: str,
+    payload: DiarizationEvaluationIn,
+):
+    if meeting_id not in STORE:
+        raise HTTPException(404, "meeting not found")
+
+    hypothesis = (
+        payload.hypothesis_speaker_segments
+        if payload.hypothesis_speaker_segments is not None
+        else STORE[meeting_id].get("speaker_segments", [])
+    )
+
+    hypothesis_segments = [
+        item.model_dump() if hasattr(item, "model_dump") else item
+        for item in hypothesis
+    ]
+    result = evaluate_diarization_metrics(
+        reference_speaker_segments=[
+            item.model_dump() for item in payload.reference_speaker_segments
+        ],
+        hypothesis_speaker_segments=hypothesis_segments,
+        reference_overlap_segments=payload.reference_overlap_segments,
+        hypothesis_overlap_segments=payload.hypothesis_overlap_segments,
+        uri=meeting_id,
+        collar_seconds=payload.collar_seconds,
+        skip_overlap=payload.skip_overlap,
+    )
+
+    STORE[meeting_id]["diarization_evaluation"] = result
+    save_asr_artifacts(meeting_id, STORE[meeting_id])
+    cache_meeting_state(meeting_id, STORE[meeting_id])
+
+    return {
+        "meeting_id": meeting_id,
+        **result,
     }
 
 
@@ -288,6 +399,10 @@ def search_meeting_evidence(
     meeting_id: str,
     q: str,
     limit: int = 5,
+    speaker_id: str | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    topic: str | None = None,
 ):
     if not restore_meeting_from_cache(meeting_id):
         raise HTTPException(404, "meeting not found")
@@ -303,6 +418,10 @@ def search_meeting_evidence(
             meeting_id=meeting_id,
             query=query,
             limit=safe_limit,
+            speaker_id=speaker_id,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            topic=topic,
         )
     except Exception as exc:
         raise HTTPException(
@@ -375,7 +494,7 @@ def download_pdf_report(meeting_id: str):
 
 @app.get("/meetings/{meeting_id}/quality-report")
 def get_quality_report(meeting_id: str):
-    result = restore_meeting_from_cache(meeting_id)
+    result = load_meeting_result_for_quality(meeting_id)
 
     if not result:
         raise HTTPException(status_code=404, detail="Meeting result not found")
@@ -425,6 +544,23 @@ def build_evidence_from_asr(meeting_id: str, asr_result: dict) -> list[dict]:
             "evidence_id": evidence_id,
             "meeting_id": meeting_id,
             "speaker_id": span.get("speaker_id", "speaker_unknown"),
+            "speaker_ids": _speaker_ids_for_span(span),
+            "speaker_confidences": span.get(
+                "speaker_confidences",
+                {},
+            ),
+            "speaker_candidates": span.get(
+                "speaker_candidates",
+                [],
+            ),
+            "overlap": bool(
+                span.get("overlap", False)
+                or len(_speaker_ids_for_span(span)) > 1
+            ),
+            "confidence_source": span.get(
+                "confidence_source",
+                "derived_alignment",
+            ),
             "speaker_name": span.get(
                 "speaker_name",
                 span.get("display_name"),
@@ -432,8 +568,13 @@ def build_evidence_from_asr(meeting_id: str, asr_result: dict) -> list[dict]:
             "text": text,
             "start_ms": int(span.get("start_ms", 0)),
             "end_ms": int(span.get("end_ms", 0)),
-            "asr_confidence": float(span.get("asr_confidence", 0.5)),
-            "speaker_confidence": float(span.get("speaker_confidence", 0.5)),
+            "asr_confidence": _numeric_confidence(
+                span.get("asr_confidence"),
+                default=0.5,
+            ),
+            "speaker_confidence": _numeric_confidence(
+                span.get("speaker_confidence"),
+            ),
             "speaker_source": span.get("speaker_source", "unknown"),
         })
 
@@ -443,30 +584,39 @@ def build_evidence_from_asr(meeting_id: str, asr_result: dict) -> list[dict]:
 def run_agent(meeting_id: str):
     asr_result = load_asr_result_for_agent(meeting_id)
 
-    spans = asr_result.get("transcript_spans", [])
-    evidence = []
-
-    for index, span in enumerate(spans):
-        text = span.get("text", "").strip()
-        if not text:
-            continue
-
-        evidence.append({
-            "evidence_id": f"seg_{index:04d}",
-            "meeting_id": meeting_id,
-            "speaker_id": span.get("speaker_id", "UNKNOWN"),
-            "text": text,
-            "start_ms": int(span.get("start_ms", 0)),
-            "end_ms": int(span.get("end_ms", 0)),
-        })
+    evidence = build_evidence_from_asr(meeting_id, asr_result)
 
     state = {
         "meeting_id": meeting_id,
         "title": asr_result.get("title", "会议纪要"),
         "participants": asr_result.get("participants", []),
         "evidence": evidence,
-        "speaker_ids": sorted({item["speaker_id"] for item in evidence}),
+        "speaker_ids": sorted({
+            speaker_id
+            for item in evidence
+            for speaker_id in item.get(
+                "speaker_ids",
+                [item["speaker_id"]],
+            )
+            if speaker_id
+        }),
         "speaker_mapping": asr_result.get("speaker_mapping", {}),
+        "transcript_spans": asr_result.get("transcript_spans", []),
+        "speaker_segments": asr_result.get("speaker_segments", []),
+        "exclusive_speaker_segments": asr_result.get(
+            "exclusive_speaker_segments",
+            [],
+        ),
+        "overlap_segments": asr_result.get("overlap_segments", []),
+        "diarization_metrics": asr_result.get(
+            "diarization_metrics",
+            {},
+        ),
+        "diarization_evaluation": asr_result.get(
+            "diarization_evaluation",
+            {},
+        ),
+        "speaker_name_map": asr_result.get("speaker_name_map", {}),
         "contributions": [],
         "action_items": [],
         "risks": [],
@@ -503,8 +653,32 @@ def run_agent_workflow(
         "audio_info": asr_result.get("audio_info", {}),
         "participants": asr_result.get("participants", []),
         "evidence": evidence,
-        "speaker_ids": sorted({item["speaker_id"] for item in evidence}),
+        "speaker_ids": sorted({
+            speaker_id
+            for item in evidence
+            for speaker_id in item.get(
+                "speaker_ids",
+                [item["speaker_id"]],
+            )
+            if speaker_id
+        }),
         "speaker_mapping": asr_result.get("speaker_mapping", {}),
+        "transcript_spans": asr_result.get("transcript_spans", []),
+        "speaker_segments": asr_result.get("speaker_segments", []),
+        "exclusive_speaker_segments": asr_result.get(
+            "exclusive_speaker_segments",
+            [],
+        ),
+        "overlap_segments": asr_result.get("overlap_segments", []),
+        "diarization_metrics": asr_result.get(
+            "diarization_metrics",
+            {},
+        ),
+        "diarization_evaluation": asr_result.get(
+            "diarization_evaluation",
+            {},
+        ),
+        "speaker_name_map": asr_result.get("speaker_name_map", {}),
         "contributions": [],
         "action_items": [],
         "risks": [],

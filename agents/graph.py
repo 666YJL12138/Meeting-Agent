@@ -131,12 +131,13 @@ def diarization_node(state: MeetingState) -> MeetingState:
     )
 
     with measure_stage(state, "diarization"):
-        speaker_segments = diarize_audio(
+        diarization_result = diarize_audio(
             wav_path=state["normalized_audio_uri"],
             voice_segments=state.get("voice_segments", []),
             min_speakers=expected_speakers,
             max_speakers=expected_speakers,
         )
+        speaker_segments = diarization_result["speaker_segments"]
 
         assigned_spans = assign_speakers_to_spans(
             transcript_spans=state.get("transcript_spans", []),
@@ -154,6 +155,13 @@ def diarization_node(state: MeetingState) -> MeetingState:
             "transcript_spans": assigned_spans,
             "speakers": speakers,
             "speaker_segments": speaker_segments,
+            "exclusive_speaker_segments": diarization_result[
+                "exclusive_speaker_segments"
+            ],
+            "overlap_segments": diarization_result["overlap_segments"],
+            "diarization_metrics": diarization_result[
+                "diarization_metrics"
+            ],
             "speaker_ids": [
                 item.get("speaker_id")
                 for item in speaker_segments
@@ -165,9 +173,19 @@ def diarization_node(state: MeetingState) -> MeetingState:
 
     return {
         "speaker_segments": mapped["speaker_segments"],
+        "speaker_ids": mapped["speaker_ids"],
+        "exclusive_speaker_segments": mapped[
+            "exclusive_speaker_segments"
+        ],
+        "overlap_segments": mapped["overlap_segments"],
+        "diarization_metrics": mapped["diarization_metrics"],
         "transcript_spans": mapped["transcript_spans"],
         "speakers": mapped["speakers"],
         "speaker_mapping": speaker_mapping,
+        "speaker_name_map": mapped.get(
+            "speaker_name_map",
+            {},
+        ),
         "timings": state.get("timings", {}),
         "progress": 82,
         "status": "diarization_done",
@@ -192,6 +210,23 @@ def evidence_stub_node(state: MeetingState) -> MeetingState:
             "start_ms": span["start_ms"],
             "end_ms": span["end_ms"],
             "speaker_id": span.get("speaker_id"),
+            "speaker_ids": span.get(
+                "speaker_ids",
+                [span.get("speaker_id")],
+            ),
+            "speaker_confidences": span.get(
+                "speaker_confidences",
+                {},
+            ),
+            "speaker_candidates": span.get(
+                "speaker_candidates",
+                [],
+            ),
+            "overlap": bool(span.get("overlap", False)),
+            "confidence_source": span.get(
+                "confidence_source",
+                "derived_alignment",
+            ),
             "speaker_name": span.get("speaker_name"),
         })
 
@@ -349,6 +384,10 @@ def run_audio_asr_graph(meeting: dict) -> dict:
         "transcript_spans": [],
         "speakers": [],
         "speaker_segments": [],
+        "exclusive_speaker_segments": [],
+        "overlap_segments": [],
+        "diarization_metrics": {},
+        "diarization_evaluation": {},
         "speaker_mapping": {},
         "claims": [],
         "speaker_summaries": [],

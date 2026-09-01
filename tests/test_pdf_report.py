@@ -93,6 +93,24 @@ def test_formal_pdf_report_contains_business_sections(tmp_path, monkeypatch):
                 "speaker_source": "pyannote",
             },
         ],
+        "diarization_evaluation": {
+            "evaluation_status": "available",
+            "reference_speaker_count": 3,
+            "hypothesis_speaker_count": 3,
+            "speaker_metrics": {
+                "der": 0.125,
+                "jer": 0.2,
+                "speaker_accuracy": 0.875,
+                "miss_rate": 0.05,
+                "false_alarm_rate": 0.025,
+                "confusion_rate": 0.05,
+            },
+            "overlap_metrics": {
+                "precision": 0.8,
+                "recall": 0.75,
+                "f1": 0.7742,
+            },
+        },
     }
 
     output_path = pdf_report.generate_meeting_pdf(meeting)
@@ -101,3 +119,16 @@ def test_formal_pdf_report_contains_business_sections(tmp_path, monkeypatch):
     assert output_path == str(report)
     assert report.exists()
     assert report.stat().st_size > 1000
+
+    evaluation_table = pdf_report._diarization_evaluation_table(  # noqa: SLF001
+        meeting["diarization_evaluation"],
+        pdf_report.build_styles(),
+    )
+    flattened = [
+        cell.text
+        for row in evaluation_table._cellvalues
+        for cell in row
+    ]
+    assert any("DER" in value for value in flattened)
+    assert any("12.50%" in value for value in flattened)
+    assert any("重叠语音 F1" in value for value in flattened)

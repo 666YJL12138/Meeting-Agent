@@ -2,22 +2,22 @@ from collections import defaultdict
 
 
 CLAIM_KEYWORDS = {
-    "decision": [
+    "决策": [
         "决定", "确定", "通过", "结论", "最终", "统一", "确认",
     ],
-    "action_item": [
+    "行动项": [
         "需要", "负责", "完成", "提交", "跟进", "推进", "落地", "下周", "明天",
     ],
-    "risk": [
+    "风险": [
         "风险", "问题", "担心", "可能", "不确定", "阻塞", "延迟", "困难",
     ],
-    "suggestion": [
+    "建议": [
         "建议", "可以", "最好", "应该", "考虑", "优化", "改进",
     ],
-    "commitment": [
+    "承诺": [
         "我会", "我们会", "我来", "我们负责", "承诺", "保证",
     ],
-    "fact": [
+    "事实": [
         "目前", "已经", "完成了", "结果", "数据", "显示", "现在",
     ],
 }
@@ -79,7 +79,7 @@ def classify_claim(text: str) -> str:
                 return claim_type
 
     if len(text) >= 18:
-        return "viewpoint"
+        return "观点"
 
     return "ignore"
 
@@ -87,19 +87,19 @@ def classify_claim(text: str) -> str:
 def build_statement(text: str, claim_type: str) -> str:
     text = text.strip()
 
-    if claim_type == "action_item":
+    if claim_type in {"action_item", "行动项"}:
         return text
 
-    if claim_type == "decision":
+    if claim_type in {"decision", "决策"}:
         return text
 
-    if claim_type == "risk":
+    if claim_type in {"risk", "风险"}:
         return text
 
-    if claim_type == "suggestion":
+    if claim_type in {"suggestion", "建议"}:
         return text
 
-    if claim_type == "commitment":
+    if claim_type in {"commitment", "承诺"}:
         return text
 
     return text

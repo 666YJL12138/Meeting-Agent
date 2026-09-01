@@ -3,9 +3,48 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import hashlib
+
 from agents.graph import run_audio_asr_graph
 from orchestration.graph import build_meeting_graph
 from services.job_store import get_job, update_job
+
+
+def _numeric_confidence(value: Any, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _speaker_ids_for_item(item: dict[str, Any]) -> list[str]:
+    values = item.get("speaker_ids")
+    if not isinstance(values, list):
+        values = [item.get("speaker_id", "speaker_unknown")]
+
+    speaker_ids = []
+    for value in values:
+        speaker_id = str(value or "").strip()
+        if speaker_id and speaker_id not in speaker_ids:
+            speaker_ids.append(speaker_id)
+    return speaker_ids or ["speaker_unknown"]
+
+
+def _evidence_hash(
+    meeting_id: str,
+    source_id: str,
+    span: dict[str, Any],
+) -> str:
+    raw = "|".join([
+        str(meeting_id),
+        "transcript",
+        str(source_id),
+        str(span.get("speaker_id", "")),
+        str(span.get("start_ms", "")),
+        str(span.get("end_ms", "")),
+        str(span.get("text", "")),
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def now_iso() -> str:
@@ -89,6 +128,11 @@ def build_evidence(
             "evidence_id": (
                 f"ev_{span.get('span_id', index)}"
             ),
+            "evidence_hash": _evidence_hash(
+                meeting_id,
+                span.get("span_id", index),
+                span,
+            ),
             "meeting_id": meeting_id,
             "speaker_id": span.get(
                 "speaker_id",
@@ -105,17 +149,29 @@ def build_evidence(
             "end_ms": int(
                 span.get("end_ms", 0)
             ),
-            "asr_confidence": float(
-                span.get(
-                    "asr_confidence",
-                    0.5,
-                )
+            "asr_confidence": _numeric_confidence(
+                span.get("asr_confidence"),
+                default=0.5,
             ),
-            "speaker_confidence": float(
-                span.get(
-                    "speaker_confidence",
-                    0.5,
-                )
+            "speaker_confidence": _numeric_confidence(
+                span.get("speaker_confidence"),
+            ),
+            "speaker_ids": _speaker_ids_for_item(span),
+            "speaker_confidences": span.get(
+                "speaker_confidences",
+                {},
+            ),
+            "speaker_candidates": span.get(
+                "speaker_candidates",
+                [],
+            ),
+            "overlap": bool(
+                span.get("overlap", False)
+                or len(_speaker_ids_for_item(span)) > 1
+            ),
+            "confidence_source": span.get(
+                "confidence_source",
+                "derived_alignment",
             ),
             "speaker_source": span.get(
                 "speaker_source",
@@ -190,14 +246,43 @@ def run_full_workflow(
                 "audio_info",
                 {},
             ),
+            "transcript_spans": asr_state.get(
+                "transcript_spans",
+                [],
+            ),
+            "speaker_segments": asr_state.get(
+                "speaker_segments",
+                [],
+            ),
+            "exclusive_speaker_segments": asr_state.get(
+                "exclusive_speaker_segments",
+                [],
+            ),
+            "overlap_segments": asr_state.get(
+                "overlap_segments",
+                [],
+            ),
+            "diarization_metrics": asr_state.get(
+                "diarization_metrics",
+                {},
+            ),
+            "diarization_evaluation": asr_state.get(
+                "diarization_evaluation",
+                {},
+            ),
             "participants": meeting.get(
                 "participants",
                 [],
             ),
             "evidence": evidence,
             "speaker_ids": sorted({
-                item["speaker_id"]
+                speaker_id
                 for item in evidence
+                for speaker_id in item.get(
+                    "speaker_ids",
+                    [item["speaker_id"]],
+                )
+                if speaker_id
             }),
             "speaker_mapping": asr_state.get(
                 "speaker_mapping",
@@ -210,6 +295,12 @@ def run_full_workflow(
             "claims": [],
             "speaker_summaries": [],
             "evidence_links": [],
+            "review_required": False,
+            "review_reasons": [],
+            "review_queue": [],
+            "retry_count": 0,
+            "node_attempts": {},
+            "orchestration_trace": [],
             "send_email": meeting.get(
                 "send_email",
                 False,

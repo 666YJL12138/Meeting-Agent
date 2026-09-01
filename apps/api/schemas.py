@@ -41,6 +41,10 @@ class MeetingOut(BaseModel):
     voice_segments: list[dict[str, Any]] = []
     speakers: list[dict[str, Any]] = []
     speaker_segments: list[dict[str, Any]] = []
+    exclusive_speaker_segments: list[dict[str, Any]] = []
+    overlap_segments: list[dict[str, Any]] = []
+    diarization_metrics: dict[str, Any] = {}
+    diarization_evaluation: dict[str, Any] = {}
     speaker_mapping: dict[str, str] = {}
     speaker_name_map: dict[str, str] = {}
     transcript_spans: list[dict[str, Any]] = []
@@ -92,6 +96,37 @@ class DiarizationDebugOut(BaseModel):
     speaker_source: str
     speakers: list[dict[str, Any]]
     speaker_segments: list[dict[str, Any]]
+    exclusive_speaker_segments: list[dict[str, Any]] = []
+    overlap_segments: list[dict[str, Any]] = []
+    diarization_metrics: dict[str, Any] = {}
+    diarization_evaluation: dict[str, Any] = {}
+
+
+class DiarizationSegmentIn(BaseModel):
+    speaker_id: str
+    start_ms: int
+    end_ms: int
+    confidence: float | None = None
+    confidence_source: str | None = None
+
+
+class DiarizationEvaluationIn(BaseModel):
+    reference_speaker_segments: list[DiarizationSegmentIn]
+    hypothesis_speaker_segments: list[DiarizationSegmentIn] | None = None
+    reference_overlap_segments: list[dict[str, Any]] = Field(default_factory=list)
+    hypothesis_overlap_segments: list[dict[str, Any]] = Field(default_factory=list)
+    collar_seconds: float = Field(default=0.0, ge=0.0)
+    skip_overlap: bool = False
+
+
+class DiarizationEvaluationOut(BaseModel):
+    meeting_id: str
+    evaluation_status: str
+    reference_speaker_count: int = 0
+    hypothesis_speaker_count: int = 0
+    speaker_label_mapping: dict[str, str] = Field(default_factory=dict)
+    speaker_metrics: dict[str, Any] = Field(default_factory=dict)
+    overlap_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class ClaimReviewIn(BaseModel):

@@ -36,6 +36,19 @@ def _display_name(item: dict, mapping: dict[str, str]) -> str:
     )
 
 
+def _speaker_ids(item: dict) -> list[str]:
+    values = item.get("speaker_ids")
+    if not isinstance(values, list):
+        values = [item.get("speaker_id", "speaker_unknown")]
+
+    speaker_ids = []
+    for value in values:
+        speaker_id = str(value or "").strip()
+        if speaker_id and speaker_id not in speaker_ids:
+            speaker_ids.append(speaker_id)
+    return speaker_ids or ["speaker_unknown"]
+
+
 def build_pdf_ready_result(state: dict) -> dict:
     """Convert the multi-agent state into the schema expected by the PDF service."""
     claims = []
@@ -67,6 +80,7 @@ def build_pdf_ready_result(state: dict) -> dict:
             ),
             "review_status": claim.get("support_status", "supported"),
             "support_status": claim.get("support_status", "supported"),
+            "review_reason": claim.get("review_reason"),
         })
 
     return {
@@ -76,12 +90,33 @@ def build_pdf_ready_result(state: dict) -> dict:
         "language": state.get("language", "zh-CN"),
         "status": "agent_workflow_done",
         "audio_info": state.get("audio_info", {}),
+        "speaker_ids": state.get("speaker_ids", []),
+        "speaker_segments": state.get("speaker_segments", []),
+        "exclusive_speaker_segments": state.get(
+            "exclusive_speaker_segments",
+            [],
+        ),
+        "overlap_segments": state.get("overlap_segments", []),
+        "diarization_metrics": state.get(
+            "diarization_metrics",
+            {},
+        ),
+        "diarization_evaluation": state.get(
+            "diarization_evaluation",
+            {},
+        ),
         "speaker_mapping": speaker_mapping,
         "speaker_name_map": speaker_mapping,
         "claims": claims,
         "speaker_summaries": _build_speaker_summaries(claims),
         "evidence_links": evidence_links,
         "rag_supplements": state.get("rag_supplements", []),
+        "review_required": state.get("review_required", False),
+        "review_reasons": state.get("review_reasons", []),
+        "review_queue": state.get("review_queue", []),
+        "retry_count": state.get("retry_count", 0),
+        "node_attempts": state.get("node_attempts", {}),
+        "orchestration_trace": state.get("orchestration_trace", []),
         "errors": state.get("errors", []),
     }
 
@@ -107,7 +142,29 @@ def _build_evidence_links(
     return [
         {
             "evidence_id": item.get("evidence_id"),
+            "evidence_hash": item.get("evidence_hash"),
             "speaker_id": item.get("speaker_id"),
+            "speaker_ids": _speaker_ids(item),
+            "speaker_names": [
+                speaker_mapping.get(speaker_id, speaker_id)
+                for speaker_id in _speaker_ids(item)
+            ],
+            "speaker_confidences": item.get(
+                "speaker_confidences",
+                {},
+            ),
+            "speaker_candidates": item.get(
+                "speaker_candidates",
+                [],
+            ),
+            "overlap": bool(
+                item.get("overlap", False)
+                or len(_speaker_ids(item)) > 1
+            ),
+            "confidence_source": item.get(
+                "confidence_source",
+                "derived_alignment",
+            ),
             "speaker_name": item.get("speaker_name")
             or item.get("display_name")
             or speaker_mapping.get(item.get("speaker_id"))
@@ -117,7 +174,7 @@ def _build_evidence_links(
             "start_ms": item.get("start_ms", 0),
             "end_ms": item.get("end_ms", 0),
             "asr_confidence": item.get("asr_confidence", 0.5),
-            "speaker_confidence": item.get("speaker_confidence", 0.5),
+            "speaker_confidence": item.get("speaker_confidence", 0.0),
             "speaker_source": item.get("speaker_source", "unknown"),
         }
         for item in evidence

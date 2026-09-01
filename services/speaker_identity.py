@@ -131,6 +131,29 @@ def apply_speaker_name_map(payload: dict, speaker_name_map: dict[str, str] | Non
                 item.setdefault("speaker_name", display_name)
                 item.setdefault("display_name", display_name)
 
+            speaker_ids = item.get("speaker_ids")
+            if isinstance(speaker_ids, list):
+                item["speaker_names"] = [
+                    speaker_display_name(
+                        speaker_id,
+                        speaker_name_map,
+                    )
+                    for speaker_id in speaker_ids
+                    if speaker_id
+                ]
+
+            candidates = item.get("speaker_candidates")
+            if isinstance(candidates, list):
+                for candidate in candidates:
+                    if not isinstance(candidate, dict):
+                        continue
+                    candidate_id = candidate.get("speaker_id")
+                    if candidate_id:
+                        candidate["speaker_name"] = speaker_display_name(
+                            candidate_id,
+                            speaker_name_map,
+                        )
+
     if isinstance(result.get("speaker_ids"), list):
         result["speaker_ids"] = list(
             dict.fromkeys(

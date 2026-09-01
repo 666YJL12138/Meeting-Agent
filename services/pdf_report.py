@@ -17,6 +17,11 @@ from reportlab.platypus import (
 )
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from services.diarization_evaluation_view import (
+    evaluation_metric_rows,
+    evaluation_reason_text,
+    evaluation_status_text,
+)
 
 
 FONT_NAME = "STSong-Light"
@@ -74,6 +79,14 @@ def format_confidence_breakdown(value: dict | None) -> str:
         except (TypeError, ValueError):
             parts.append(f"{label}={safe_text(value[key])}")
     return "；".join(parts) or "-"
+
+
+def _review_reason_text(value) -> str:
+    if not value:
+        return "-"
+    if isinstance(value, list):
+        return "；".join(str(item) for item in value if item)
+    return str(value)
 
 
 def build_styles():
@@ -395,6 +408,49 @@ def _evidence_table(
     return table
 
 
+def _diarization_evaluation_table(
+    evaluation: dict,
+    styles,
+) -> Table:
+    rows = []
+    metric_rows = evaluation_metric_rows(evaluation)
+    for index in range(0, len(metric_rows), 2):
+        left_label, left_value = metric_rows[index]
+        row = [
+            _p(left_label, styles["Table"]),
+            _p(left_value, styles["Table"]),
+        ]
+        if index + 1 < len(metric_rows):
+            right_label, right_value = metric_rows[index + 1]
+            row.extend([
+                _p(right_label, styles["Table"]),
+                _p(right_value, styles["Table"]),
+            ])
+        else:
+            row.extend([_p("", styles["Table"]), _p("", styles["Table"])])
+        rows.append(row)
+
+    table = Table(
+        rows,
+        colWidths=[38 * mm, 42 * mm, 38 * mm, 42 * mm],
+        hAlign="LEFT",
+    )
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT_NAME),
+        ("BACKGROUND", (0, 0), (0, -1), LIGHT_BLUE),
+        ("BACKGROUND", (2, 0), (2, -1), LIGHT_BLUE),
+        ("GRID", (0, 0), (-1, -1), 0.35, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("ALIGN", (3, 0), (3, -1), "RIGHT"),
+    ]))
+    return table
+
+
 def _draw_header_footer(canvas, doc):
     canvas.saveState()
     width, height = A4
@@ -434,6 +490,7 @@ def generate_meeting_pdf(meeting: dict) -> str:
         for item in claims + evidence
         if item.get("speaker_id")
     })
+    diarization_evaluation = meeting.get("diarization_evaluation") or {}
 
     story = [
         Spacer(1, 8 * mm),
@@ -453,12 +510,35 @@ def generate_meeting_pdf(meeting: dict) -> str:
             "不代表语言模型自报概率。",
             styles["Small"],
         ),
+        Paragraph("说话人归因评估", styles["Section"]),
+        Paragraph(
+            f"评估状态：{safe_text(evaluation_status_text(diarization_evaluation))}"
+            + (
+                f"；{safe_text(evaluation_reason_text(diarization_evaluation))}"
+                if evaluation_reason_text(diarization_evaluation)
+                else ""
+            ),
+            styles["Body"],
+        ),
+        (
+            _diarization_evaluation_table(diarization_evaluation, styles)
+            if diarization_evaluation.get("evaluation_status") == "available"
+            else Paragraph(
+                "当前结果没有可用于离线评估的参考标注。",
+                styles["Small"],
+            )
+        ),
+        Spacer(1, 5 * mm),
         Paragraph("一、执行摘要", styles["Section"]),
         Paragraph(
             f"本次会议共识别 {len(speakers)} 位发言人，形成 "
             f"{len(conclusions)} 条关键结论、{len(actions)} 条行动项和 "
             f"{len(risks)} 条风险项，关联 {len(evidence)} 个证据片段。",
             styles["Body"],
+        ),
+        Paragraph(
+            f"复核原因：{safe_text(_review_reason_text(meeting.get('review_reasons')))}",
+            styles["Small"],
         ),
         Paragraph(
             f"发言人：{safe_text('、'.join(speakers))}" if speakers else "发言人：-",

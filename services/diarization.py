@@ -6,7 +6,10 @@ import wave
 import numpy as np
 import torch
 from dotenv import load_dotenv
-from pyannote.audio import Pipeline
+try:
+    from pyannote.audio import Pipeline
+except ModuleNotFoundError:
+    Pipeline = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -18,6 +21,10 @@ DEFAULT_PYANNOTE_MODEL = "pyannote/speaker-diarization-community-1"
 
 @lru_cache(maxsize=1)
 def get_diarization_pipeline():
+    if Pipeline is None:
+        print("[diarization] pyannote.audio is not installed, fallback enabled")
+        return None
+
     try:
         load_dotenv(ENV_FILE, override=True)
 
@@ -58,11 +65,16 @@ def diarize_audio(
     voice_segments: list[dict],
     min_speakers: int | None = None,
     max_speakers: int | None = None,
-) -> list[dict]:
+) -> dict:
     pipeline = get_diarization_pipeline()
 
     if pipeline is None:
-        return fallback_diarization(voice_segments)
+        fallback_segments = fallback_diarization(voice_segments)
+        return build_diarization_result(
+            speaker_segments=fallback_segments,
+            exclusive_speaker_segments=fallback_segments,
+            source="fallback_round_robin",
+        )
 
     kwargs = {}
 
@@ -75,16 +87,36 @@ def diarize_audio(
     audio = load_waveform_for_pyannote(wav_path)
     output = pipeline(audio, **kwargs)
 
-    annotation = getattr(output, "exclusive_speaker_diarization", None)
-    if annotation is None:
-        annotation = getattr(output, "speaker_diarization", output)
+    # Keep both views: the regular annotation can contain overlapping
+    # speakers, while the exclusive view remains useful for ASR alignment.
+    annotation = getattr(output, "speaker_diarization", output)
+    exclusive_annotation = getattr(
+        output,
+        "exclusive_speaker_diarization",
+        annotation,
+    )
 
     speaker_segments = parse_pyannote_output(annotation)
+    exclusive_segments = parse_pyannote_output(exclusive_annotation)
 
     if not speaker_segments:
-        return fallback_diarization(voice_segments)
+        fallback_segments = fallback_diarization(voice_segments)
+        return build_diarization_result(
+            speaker_segments=fallback_segments,
+            exclusive_speaker_segments=fallback_segments,
+            source="fallback_round_robin",
+        )
 
-    return merge_close_segments(speaker_segments)
+    speaker_segments = merge_close_segments(speaker_segments)
+    exclusive_segments = merge_close_segments(
+        exclusive_segments or speaker_segments,
+    )
+
+    return build_diarization_result(
+        speaker_segments=speaker_segments,
+        exclusive_speaker_segments=exclusive_segments,
+        source="pyannote",
+    )
 
 
 def load_waveform_for_pyannote(wav_path: str) -> dict:
@@ -122,7 +154,10 @@ def parse_pyannote_output(annotation) -> list[dict]:
                 "speaker_id": normalize_speaker_id(str(speaker)),
                 "start_ms": int(turn.start * 1000),
                 "end_ms": int(turn.end * 1000),
-                "confidence": 0.8,
+                # Community diarization output exposes labels and turns,
+                # not a calibrated per-turn probability.
+                "confidence": None,
+                "confidence_source": "unavailable",
                 "source": "pyannote",
             })
     else:
@@ -132,7 +167,8 @@ def parse_pyannote_output(annotation) -> list[dict]:
                     "speaker_id": normalize_speaker_id(str(speaker)),
                     "start_ms": int(turn.start * 1000),
                     "end_ms": int(turn.end * 1000),
-                    "confidence": 0.8,
+                    "confidence": None,
+                    "confidence_source": "unavailable",
                     "source": "pyannote",
                 })
         except TypeError:
@@ -151,6 +187,7 @@ def fallback_diarization(voice_segments: list[dict]) -> list[dict]:
             "start_ms": segment["start_ms"],
             "end_ms": segment["end_ms"],
             "confidence": 0.3,
+            "confidence_source": "heuristic_fallback",
             "source": "fallback_round_robin",
         })
 
@@ -181,11 +218,121 @@ def merge_close_segments(segments: list[dict], gap_ms: int = 300) -> list[dict]:
 
         if same_speaker and close_enough:
             last["end_ms"] = max(last["end_ms"], seg["end_ms"])
-            last["confidence"] = min(last["confidence"], seg["confidence"])
+            last["confidence"] = merge_confidence(
+                last.get("confidence"),
+                seg.get("confidence"),
+            )
         else:
             merged.append(seg)
 
     return sorted(merged, key=lambda x: x["start_ms"])
+
+
+def merge_confidence(
+    left: float | None,
+    right: float | None,
+) -> float | None:
+    """Merge optional confidence values without inventing a probability."""
+    if left is None or right is None:
+        return None
+    return min(left, right)
+
+
+def build_diarization_result(
+    *,
+    speaker_segments: list[dict],
+    exclusive_speaker_segments: list[dict],
+    source: str,
+) -> dict:
+    overlap_segments = detect_overlap_segments(speaker_segments)
+    return {
+        "speaker_segments": speaker_segments,
+        "exclusive_speaker_segments": exclusive_speaker_segments,
+        "overlap_segments": overlap_segments,
+        "diarization_metrics": {
+            "source": source,
+            "evaluation_status": "not_evaluated",
+            "evaluation_reason": "reference_annotations_required",
+            "speaker_segment_count": len(speaker_segments),
+            "exclusive_segment_count": len(exclusive_speaker_segments),
+            "overlap_segment_count": len(overlap_segments),
+            "overlap_total_ms": sum(
+                item["duration_ms"] for item in overlap_segments
+            ),
+        },
+    }
+
+
+def detect_overlap_segments(
+    speaker_segments: list[dict],
+) -> list[dict]:
+    """Find time regions covered by at least two distinct speakers."""
+    boundaries = sorted({
+        point
+        for segment in speaker_segments
+        for point in (
+            int(segment["start_ms"]),
+            int(segment["end_ms"]),
+        )
+    })
+
+    overlaps = []
+    for start_ms, end_ms in zip(boundaries, boundaries[1:]):
+        if end_ms <= start_ms:
+            continue
+
+        active_speakers = sorted({
+            segment["speaker_id"]
+            for segment in speaker_segments
+            if (
+                segment["start_ms"] < end_ms
+                and segment["end_ms"] > start_ms
+            )
+        })
+
+        if len(active_speakers) < 2:
+            continue
+
+        overlaps.append({
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "duration_ms": end_ms - start_ms,
+            "speaker_ids": active_speakers,
+            "source": "pyannote_overlap",
+            "confidence": None,
+            "confidence_source": "unavailable",
+        })
+
+    return merge_adjacent_overlap_segments(overlaps)
+
+
+def merge_adjacent_overlap_segments(
+    segments: list[dict],
+) -> list[dict]:
+    if not segments:
+        return []
+
+    ordered = sorted(
+        segments,
+        key=lambda item: (
+            item["start_ms"],
+            tuple(item["speaker_ids"]),
+        ),
+    )
+    merged = [dict(ordered[0])]
+
+    for segment in ordered[1:]:
+        last = merged[-1]
+        if (
+            last["speaker_ids"] == segment["speaker_ids"]
+            and last["end_ms"] == segment["start_ms"]
+        ):
+            last["end_ms"] = segment["end_ms"]
+            last["duration_ms"] += segment["duration_ms"]
+        else:
+            merged.append(dict(segment))
+
+    return merged
 
 
 def assign_speakers_to_spans(
@@ -196,9 +343,11 @@ def assign_speakers_to_spans(
     assigned = []
 
     for span in transcript_spans:
-        best_speaker = "speaker_unknown"
-        best_overlap = 0
-        best_source = "unknown"
+        span_duration = max(
+            1,
+            span["end_ms"] - span["start_ms"],
+        )
+        candidates = []
 
         for seg in speaker_segments:
             overlap = overlap_ms(
@@ -208,22 +357,64 @@ def assign_speakers_to_spans(
                 seg["end_ms"],
             )
 
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_speaker = seg["speaker_id"]
-                best_source = seg.get("source", "unknown")
+            if overlap <= 0:
+                continue
 
-        span_duration = max(1, span["end_ms"] - span["start_ms"])
-        speaker_confidence = round(best_overlap / span_duration, 2)
+            alignment_confidence = round(
+                overlap / span_duration,
+                4,
+            )
+            if alignment_confidence < min_confidence:
+                continue
 
-        if speaker_confidence < min_confidence:
+            candidates.append({
+                "speaker_id": seg["speaker_id"],
+                "overlap_ms": overlap,
+                "alignment_confidence": alignment_confidence,
+                "segment_confidence": seg.get("confidence"),
+                "confidence_source": seg.get(
+                    "confidence_source",
+                    "unavailable",
+                ),
+                "source": seg.get("source", "unknown"),
+            })
+
+        candidates.sort(
+            key=lambda item: (
+                -item["alignment_confidence"],
+                item["speaker_id"],
+            ),
+        )
+
+        if candidates:
+            primary = candidates[0]
+            speaker_ids = [
+                item["speaker_id"] for item in candidates
+            ]
+            speaker_confidences = {
+                item["speaker_id"]: item["alignment_confidence"]
+                for item in candidates
+            }
+            best_speaker = primary["speaker_id"]
+            speaker_confidence = primary["alignment_confidence"]
+            best_source = primary["source"]
+        else:
+            speaker_ids = ["speaker_unknown"]
+            speaker_confidences = {"speaker_unknown": 0.0}
             best_speaker = "speaker_unknown"
+            speaker_confidence = 0.0
+            best_source = "unknown"
 
         assigned.append({
             **span,
             "speaker_id": best_speaker,
+            "speaker_ids": speaker_ids,
             "speaker_confidence": speaker_confidence,
+            "speaker_confidences": speaker_confidences,
+            "speaker_candidates": candidates,
+            "overlap": len(speaker_ids) > 1,
             "speaker_source": best_source,
+            "confidence_source": "derived_alignment",
         })
 
     return assigned

@@ -1,14 +1,25 @@
 from html import escape
+from pathlib import Path
+import sys
 import requests
 import time
 import streamlit as st
 from urllib.parse import quote
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.meeting_defaults import (
     DEFAULT_MEETING_HOST,
     DEFAULT_MEETING_LANGUAGE,
     DEFAULT_MEETING_PARTICIPANTS,
     DEFAULT_MEETING_TITLE,
+)
+from services.diarization_evaluation_view import (
+    evaluation_metric_rows,
+    evaluation_reason_text,
+    evaluation_status_text,
 )
 
 
@@ -651,6 +662,7 @@ def render_claims(result: dict):
                 <b>置信度：</b>{html_text(claim.get("confidence", "-"))}
                 &nbsp;&nbsp;
                 <b>审核状态：</b>{html_text(claim.get("review_status", "-"))}
+                {f"<br/><b>审核原因：</b>{html_text(claim.get('review_reason', '-'))}" if claim.get("review_reason") else ""}
             </div>
             """,
             unsafe_allow_html=True,
@@ -776,6 +788,51 @@ def render_result_metrics(result: dict):
     for column, (label, value) in zip(columns, metrics):
         with column:
             st.metric(label, value)
+
+
+def render_diarization_evaluation(result: dict):
+    evaluation = result.get("diarization_evaluation") or {}
+
+    st.markdown(
+        '<div class="section-title">说话人归因评估</div>',
+        unsafe_allow_html=True,
+    )
+    status = evaluation_status_text(evaluation)
+    reason = evaluation_reason_text(evaluation)
+    st.caption(
+        f"评估状态：{status}"
+        + (f"；{reason}" if reason else "")
+    )
+
+    if evaluation.get("evaluation_status") != "available":
+        st.info("当前结果没有可用于离线评估的参考标注。")
+        return
+
+    summary_cols = st.columns(3)
+    summary_items = evaluation_metric_rows(evaluation)[:3]
+    for column, (label, value) in zip(summary_cols, summary_items):
+        with column:
+            st.metric(label, value)
+
+    st.dataframe(
+        [
+            {"指标": label, "数值": value}
+            for label, value in evaluation_metric_rows(evaluation)
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    mapping = evaluation.get("speaker_label_mapping") or {}
+    if mapping:
+        st.dataframe(
+            [
+                {"假设说话人": hypothesis, "参考说话人": reference}
+                for hypothesis, reference in mapping.items()
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def render_transcript(result: dict):
@@ -969,6 +1026,7 @@ with right:
 
     if result:
         render_result_metrics(result)
+        render_diarization_evaluation(result)
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "会议摘要",
             "行动项",

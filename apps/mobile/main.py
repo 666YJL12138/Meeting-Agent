@@ -11,6 +11,11 @@ from services.meeting_defaults import (
     DEFAULT_MEETING_PARTICIPANTS,
     DEFAULT_MEETING_TITLE,
 )
+from services.diarization_evaluation_view import (
+    evaluation_metric_rows,
+    evaluation_reason_text,
+    evaluation_status_text,
+)
 
 
 DEFAULT_API_BASE = "http://10.193.23.250:8000"
@@ -238,6 +243,7 @@ def main(page: ft.Page):
     risk_list = ft.Column(spacing=10)
     evidence_list = ft.Column(spacing=10)
     transcript_list = ft.Column(spacing=6)
+    evaluation_list = ft.Column(spacing=6)
     history_list = ft.Column(spacing=6)
     search_results = ft.Column(spacing=8)
     file_picker = ft.FilePicker()
@@ -306,12 +312,16 @@ def main(page: ft.Page):
         risk_list.controls.clear()
         evidence_list.controls.clear()
         transcript_list.controls.clear()
+        evaluation_list.controls.clear()
         summary_list.controls.append(ft.Text("完成分析后展示发言人贡献。", color="#667085"))
         claims_list.controls.append(ft.Text("完成分析后展示可追溯结论。", color="#667085"))
         action_list.controls.append(ft.Text("完成分析后展示行动项。", color="#667085"))
         risk_list.controls.append(ft.Text("完成分析后展示风险项。", color="#667085"))
         evidence_list.controls.append(ft.Text("完成分析后展示证据链。", color="#667085"))
         transcript_list.controls.append(ft.Text("完成分析后展示原始转写。", color="#667085"))
+        evaluation_list.controls.append(
+            ft.Text("完成分析后展示说话人归因评估。", color="#667085")
+        )
 
     def render_history(history: list[dict]):
         history_list.controls.clear()
@@ -540,6 +550,11 @@ def main(page: ft.Page):
                                 size=11,
                                 color="#667085",
                             ),
+                            ft.Text(
+                                f"审核原因：{claim.get('review_reason', '-')}",
+                                size=11,
+                                color="#667085",
+                            ) if claim.get("review_reason") else ft.Container(height=0),
                         ],
                         spacing=7,
                     )
@@ -719,6 +734,31 @@ def main(page: ft.Page):
                 padding=9,
             ),
         ]
+
+        evaluation = result.get("diarization_evaluation") or {}
+        evaluation_list.controls.clear()
+        evaluation_list.controls.append(
+            ft.Text(
+                f"评估状态：{evaluation_status_text(evaluation)}"
+                + (
+                    f"；{evaluation_reason_text(evaluation)}"
+                    if evaluation_reason_text(evaluation)
+                    else ""
+                ),
+                size=12,
+                color="#667085",
+            )
+        )
+        if evaluation.get("evaluation_status") == "available":
+            for label, value in evaluation_metric_rows(evaluation):
+                evaluation_list.controls.append(
+                    ft.Text(
+                        f"{label}：{value}",
+                        size=12,
+                        color="#344054",
+                    )
+                )
+
         page.update()
 
     def create_meeting(_):
@@ -1168,7 +1208,7 @@ def main(page: ft.Page):
                                     controls=[
                                         ft.Container(
                                             content=ft.Column(
-                                                [summary_list, claims_list],
+                                                [evaluation_list, summary_list, claims_list],
                                                 spacing=12,
                                             ),
                                             padding=ft.Padding(

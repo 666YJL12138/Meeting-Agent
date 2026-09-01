@@ -12,6 +12,12 @@ class MeetingAgentState(TypedDict, total=False):
     speaker_ids: list[str]
     participants: list[str]
     speaker_mapping: dict[str, str]
+    transcript_spans: list[dict]
+    speaker_segments: list[dict]
+    exclusive_speaker_segments: list[dict]
+    overlap_segments: list[dict]
+    diarization_metrics: dict
+    diarization_evaluation: dict
 
     contributions: list[dict]
     action_items: list[dict]
@@ -33,5 +39,11 @@ class MeetingAgentState(TypedDict, total=False):
 
     compact_evidence_json: str
     agent_cache_hit: bool
+    review_required: bool
+    review_reasons: list[str]
+    review_queue: list[dict]
+    retry_count: int
+    node_attempts: dict[str, int]
+    orchestration_trace: list[dict]
     errors: list[str]
     timings: dict[str, float]

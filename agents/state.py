@@ -15,6 +15,11 @@ class MeetingState(TypedDict, total=False):
     participants: List[str]
     speakers: List[Dict[str, Any]]
     speaker_segments: List[Dict[str, Any]]
+    speaker_ids: List[str]
+    exclusive_speaker_segments: List[Dict[str, Any]]
+    overlap_segments: List[Dict[str, Any]]
+    diarization_metrics: Dict[str, Any]
+    diarization_evaluation: Dict[str, Any]
     speaker_mapping: Dict[str, str]
     speaker_name_map: Dict[str, str]
 
