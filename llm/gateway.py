@@ -14,6 +14,7 @@ from typing import Any
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+DEFAULT_NUM_PREDICT = 768
 
 
 @lru_cache(maxsize=8)
@@ -59,7 +60,10 @@ class LLMGateway:
         self.keep_alive = os.getenv("LLM_KEEP_ALIVE", "10m")
         self.num_ctx = int(os.getenv("LLM_NUM_CTX", "4096"))
         self.num_predict = int(
-            os.getenv("LLM_NUM_PREDICT", str(self.max_tokens))
+            os.getenv(
+                "LLM_NUM_PREDICT",
+                str(min(self.max_tokens, DEFAULT_NUM_PREDICT)),
+            )
         )
         self.use_ollama_options = os.getenv(
             "LLM_USE_OLLAMA_OPTIONS",

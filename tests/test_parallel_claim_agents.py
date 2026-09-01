@@ -29,6 +29,7 @@ def test_claim_agents_run_in_parallel(monkeypatch):
             ]
 
     monkeypatch.setenv("LLM_CONCURRENCY", "3")
+    monkeypatch.setenv("AGENT_EXTRACT_MODE", "parallel")
     monkeypatch.setenv("AGENT_CACHE_ENABLED", "0")
     monkeypatch.setattr(
         "orchestration.graph.ClaimAgent",

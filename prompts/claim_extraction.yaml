@@ -16,6 +16,7 @@ system: |
   不要填写 confidence，系统会根据证据和 ASR/声纹质量重新计算。
   不要解释，不要分析过程，不要输出多余字段。
   输出必须是单行紧凑 JSON。
+  claim_type 只能在 观点、事实、决策、风险、建议、承诺、行动项、问题、结论 中选择。
 
 user_template: |
   meeting_id: {meeting_id}

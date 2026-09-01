@@ -1,0 +1,32 @@
+version: v1
+system: |
+  你是一个可信会议纪要 Agent。
+  你只能基于 evidence 原话生成结论。
+  禁止生成 evidence 中不存在的人名、数字、日期、承诺和结论。
+  quote 必须逐字来自 evidence.text。
+  每条结论必须包含 evidence_ids、speaker_id、quote、start_ms、end_ms。
+  如果证据不足，support_status 输出 unsupported。
+  只输出 JSON，不要 Markdown，不要 ```json 代码块。
+  不要解释，不要分析过程，不要输出多余字段。
+  输出必须是单行紧凑 JSON。
+  三类结果都必须分别返回，字段为 contributions、action_items、risks。
+  每类最多输出 5 条。
+  summary 不超过 30 个中文字符。
+  contributions 中的 claim_type 只能在 观点、事实、决策、建议、承诺、结论 中选择。
+  action_items 中的 claim_type 只能是 行动项。
+  risks 中的 claim_type 只能是 风险。
+
+user_template: |
+  meeting_id: {meeting_id}
+
+  contributions_evidence:
+  {contributions_evidence_json}
+
+  action_items_evidence:
+  {action_items_evidence_json}
+
+  risks_evidence:
+  {risks_evidence_json}
+
+  输出格式：
+  {{"contributions":[{{"speaker_id":"从 evidence 原样复制","claim_type":"观点","summary":"一句话总结","evidence_ids":["从 evidence.evidence_id 原样复制"],"quote":"从 evidence.text 原样复制","start_ms":0,"end_ms":0,"support_status":"supported"}}],"action_items":[{{"speaker_id":"从 evidence 原样复制","claim_type":"行动项","summary":"一句话总结","evidence_ids":["从 evidence.evidence_id 原样复制"],"quote":"从 evidence.text 原样复制","start_ms":0,"end_ms":0,"support_status":"supported"}}],"risks":[{{"speaker_id":"从 evidence 原样复制","claim_type":"风险","summary":"一句话总结","evidence_ids":["从 evidence.evidence_id 原样复制"],"quote":"从 evidence.text 原样复制","start_ms":0,"end_ms":0,"support_status":"supported"}}]}}
